@@ -13,7 +13,7 @@ from playwright.sync_api import sync_playwright
 from playwright_stealth import stealth
 from openai import OpenAI
 
-# --- 1. SESSION & BROWSER ---
+# --- 1. INITIALIZATION ---
 def get_watchlist():
     if "items" not in st.session_state or st.session_state["items"] is None:
         st.session_state["items"] = []
@@ -36,14 +36,13 @@ GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY")
 GOOGLE_CX = st.secrets.get("GOOGLE_CX")
 client = OpenAI(api_key=OPENAI_KEY)
 
-# --- 3. HELPER FUNCTIONS ---
+# --- 3. HELPER LOGIC ---
 def get_store_name(url):
-    """Extracts 'amazon.com.au' from a long URL."""
     try:
         domain = urlparse(url).netloc
         return domain.replace("www.", "")
     except:
-        return "Link"
+        return "Store"
 
 def google_search_deep(query, worldwide=False):
     if not GOOGLE_API_KEY or not GOOGLE_CX: return []
@@ -69,7 +68,7 @@ def analyze_with_vision(image_path, product_name):
             model="gpt-4o-mini",
             messages=[{
                 "role": "user",
-                "content": [{"type": "text", "text": f"Locate price for {product_name}. Return ONLY the number. Return 'N/A' if blocked."},
+                "content": [{"type": "text", "text": f"Extract price for {product_name}. Return ONLY numeric value. Return 'N/A' if blocked."},
                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}]
             }],
             max_tokens=50
@@ -79,17 +78,25 @@ def analyze_with_vision(image_path, product_name):
     except Exception: return "AI Error"
 
 def run_browser_watch(url, product_name):
+    """Ultra-Stealth Browser Engine"""
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={'width': 1280, 'height': 800}
+            viewport={'width': 1440, 'height': 900}
         )
         page = context.new_page()
         try:
             stealth(page)
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            time.sleep(random.uniform(3, 5))
+            # Hide webdriver footprints
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            page.goto(url, wait_until="domcontentloaded", timeout=75000)
+            
+            # Simulated Human Behavior
+            time.sleep(random.uniform(5, 8))
+            page.mouse.wheel(0, 400) # Scroll down to trigger lazy loading
+            time.sleep(2)
+            
             img_path = f"snap_{os.getpid()}.png"
             page.screenshot(path=img_path)
             price = analyze_with_vision(img_path, product_name)
@@ -98,76 +105,36 @@ def run_browser_watch(url, product_name):
         except: return "Timeout/Block"
         finally: browser.close()
 
-# --- 4. UI LAYOUT ---
-st.set_page_config(page_title="AU Price Watcher", layout="wide")
+# --- 4. UI ---
+st.set_page_config(page_title="Price Watch Pro AU", layout="wide")
 if not st.session_state.get("browser_installed"): install_playwright_browsers()
 
-st.title("🛒 AI Price Watcher (Multi-Store Mode)")
+st.title("🛒 AI Price Watcher (Ultra Stealth)")
 
 with st.sidebar:
-    st.header("Search & Add")
-    bulk_input = st.text_area("Bulk SKUs (comma separated)", placeholder="AM272P, MSI G274, LG Ultragear")
+    st.header("1. Bulk SKU Search")
+    bulk_input = st.text_area("SKUs (separated by commas)", placeholder="e.g. AM272P, iPhone 16")
     is_worldwide = st.checkbox("Search Worldwide?")
     
     st.divider()
-    st.subheader("Manual Entry")
-    m_sku = st.text_input("Manual SKU Name")
-    m_url = st.text_input("Manual Store URL")
+    st.header("2. Manual Store Entry")
+    m_sku = st.text_input("Product Name")
+    m_url = st.text_input("Store URL")
     
-    if st.button("Add to Watchlist"):
+    if st.button("Add to List"):
         watchlist = get_watchlist()
-        # Process Bulk
         if bulk_input:
-            for s in [sku.strip() for sku in bulk_input.split(",") if sku.strip()]:
-                with st.spinner(f"Searching for {s}..."):
+            skus = [s.strip() for s in bulk_input.split(",") if s.strip()]
+            for s in skus:
+                with st.spinner(f"Finding stores for {s}..."):
                     links = google_search_deep(s, is_worldwide)
                     for l in links:
                         if not any(item['url'] == l for item in watchlist):
                             watchlist.append({"sku": s, "url": l, "price": "Pending", "last_updated": "Never"})
-        # Process Manual
         if m_sku and m_url:
             if not any(item['url'] == m_url for item in watchlist):
                 watchlist.append({"sku": m_sku, "url": m_url, "price": "Pending", "last_updated": "Never"})
-        
         st.session_state["items"] = watchlist
         st.rerun()
 
-    if st.button("🗑️ Clear Everything"):
-        st.session_state["items"] = []
-        st.rerun()
-
-# --- 5. RESULTS ---
-watchlist = get_watchlist()
-if watchlist:
-    st.subheader(f"Watchlist: {len(watchlist)} stores found")
-    
-    # FORMATTING THE TABLE
-    df = pd.DataFrame(watchlist)
-    
-    def make_pretty_link(url):
-        store_name = get_store_name(url)
-        return f'<a href="{url}" target="_blank">{store_name}</a>'
-    
-    df_display = df.copy()
-    df_display['Store Link'] = df_display['url'].apply(make_pretty_link)
-    
-    # Hide the original messy URL and show the pretty Store Link
-    st.write(df_display[["sku", "price", "last_updated", "Store Link"]].to_html(escape=False, index=False), unsafe_allow_html=True)
-    
-    st.divider()
-    if st.button("🚀 Start Deep Scanning Prices"):
-        status = st.empty()
-        bar = st.progress(0)
-        for i, item in enumerate(watchlist):
-            status.info(f"Scanning {get_store_name(item['url'])} for {item['sku']}...")
-            price = run_browser_watch(item['url'], item['sku'])
-            st.session_state["items"][i]["price"] = price
-            st.session_state["items"][i]["last_updated"] = datetime.now().strftime("%H:%M")
-            bar.progress((i + 1) / len(watchlist))
-            if i < len(watchlist) - 1:
-                status.warning("Cooldown 8s to prevent blocking...")
-                time.sleep(8)
-        status.success("All scans finished!")
-        st.rerun()
-else:
-    st.info("Enter SKUs in the sidebar to build your list.")
+    if st.button("🗑️ Clear List"):
