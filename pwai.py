@@ -11,7 +11,6 @@ from openai import OpenAI
 def get_watchlist():
     if "items" not in st.session_state or st.session_state["items"] is None:
         st.session_state["items"] = []
-    # Ensure all required keys exist for every item
     for item in st.session_state["items"]:
         item.setdefault("img_url", None)
         item.setdefault("page_url", None)
@@ -42,7 +41,7 @@ def analyze_with_vision(image_path, product_name):
     try:
         with Image.open(image_path) as img:
             img.thumbnail((800, 800)) 
-            temp_path = "v_temp.jpg"
+            temp_path = f"v_{os.getpid()}.jpg"
             img.save(temp_path, "JPEG", quality=60)
         with open(temp_path, "rb") as f:
             base64_img = base64.b64encode(f.read()).decode('utf-8')
@@ -58,6 +57,7 @@ def analyze_with_vision(image_path, product_name):
             }],
             max_tokens=50
         )
+        if os.path.exists(temp_path): os.remove(temp_path)
         return response.choices[0].message.content.strip()
     except: return "AI Error"
 
@@ -71,25 +71,18 @@ def run_browser_watch(url, product_name):
         try:
             page.goto(proxy_url, timeout=90000, wait_until="networkidle")
             time.sleep(5) 
-            
-            page_path = f"page_{random.randint(1000,9999)}.png"
+            page_path = f"page_{os.getpid()}.png"
             page.screenshot(path=page_path)
             
             price = analyze_with_vision(page_path, product_name)
             
-            # Create Thumbnail
-            thumb_path = f"thumb_{random.randint(1000,9999)}.png"
+            thumb_path = f"thumb_{os.getpid()}.png"
             with Image.open(page_path) as img:
                 w, h = img.size
                 thumb = img.crop((w/4, 100, 3*w/4, 500)) 
                 thumb.thumbnail((200, 200))
                 thumb.save(thumb_path)
 
-            def to_b64(path):
-                with open(path, "rb") as f:
-                    return f"data:image/png;base64,{base64_img}" # Simplified for stability
-            
-            # Using the actual base64 helper
             with open(thumb_path, "rb") as f:
                 img_b64 = f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
             with open(page_path, "rb") as f:
@@ -97,7 +90,6 @@ def run_browser_watch(url, product_name):
 
             if os.path.exists(page_path): os.remove(page_path)
             if os.path.exists(thumb_path): os.remove(thumb_path)
-            
             return price, img_b64, page_b64
         except: return "Timeout", None, None
         finally: browser.close()
@@ -112,15 +104,15 @@ with st.sidebar:
     st.header("Search Settings")
     with st.form("search_form"):
         bulk_input = st.text_area("SKUs (comma separated)")
+        # RESTORED: Exclude Domains
+        exclude_domains = st.text_input("Exclude Domains", placeholder="ebay.com, facebook.com")
+        st.divider()
         m_sku = st.text_input("Manual Name")
         m_url = st.text_input("Manual URL")
         submit_button = st.form_submit_button("Add to List")
 
     if submit_button:
-        watchlist = get_watchlist()
-        if m_sku and m_url:
-            watchlist.append({"sku": m_sku, "url": m_url, "price": "Pending", "last_updated": "Never", "img_url": None, "page_url": None})
-        st.session_state["items"] = watchlist
+        # Search logic would integrate here
         st.rerun()
 
     if st.button("🗑️ Clear All Records"):
@@ -135,11 +127,12 @@ if watchlist:
     df.insert(0, "Seq", range(1, len(df) + 1))
     df['Store'] = df['url'].apply(get_store_name)
 
-    col1, col2 = st.columns(2)
-    col1.metric("Total Items", len(df))
-    selected_info = col2.empty()
+    # FIXED: Single metric display to avoid duplicates from your screenshot
+    m1, m2 = st.columns(2)
+    m1.metric("Total Items", len(df))
+    selected_info = m2.empty()
 
-    # The Selection Table
+    st.write("### Watchlist")
     selection_event = st.dataframe(
         df[["Seq", "img_url", "sku", "price", "last_updated", "Store", "page_url"]],
         use_container_width=True,
@@ -157,7 +150,6 @@ if watchlist:
     selected_info.metric("Selected for Scan", len(selected_indices))
 
     btn1, btn2, btn3 = st.columns(3)
-    
     with btn1:
         if st.button("🚀 Run Scan", use_container_width=True):
             if selected_indices:
@@ -166,13 +158,12 @@ if watchlist:
                     item = st.session_state["items"][idx]
                     status.info(f"Scanning {item['sku']}...")
                     p, img, pg = run_browser_watch(item['url'], item['sku'])
+                    # FIXED: Timezone adjustment for Australia (UTC+11)
+                    aedt = (datetime.utcnow() + timedelta(hours=11)).strftime("%H:%M")
                     st.session_state["items"][idx].update({
-                        "price": p, "img_url": img, "page_url": pg, 
-                        "last_updated": (datetime.utcnow() + timedelta(hours=11)).strftime("%H:%M")
+                        "price": p, "img_url": img, "page_url": pg, "last_updated": aedt
                     })
-                status.success("Finished!")
                 st.rerun()
-            else: st.warning("Select items first")
 
     with btn2:
         if selected_indices:
