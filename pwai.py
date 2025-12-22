@@ -6,6 +6,13 @@ import requests
 from playwright.sync_api import sync_playwright
 from playwright_stealth import stealth_sync
 from openai import OpenAI
+import streamlit as st
+
+# Accessing the values
+api_key = st.secrets["GOOGLE_API_KEY"]
+search_engine_id = st.secrets["GOOGLE_CX"]
+
+st.write(f"Using Search Engine ID: {search_engine_id}")
 
 # Initialize Clients
 # Add your keys to Streamlit Secrets or Environment Variables
@@ -96,3 +103,4 @@ if "items" in st.session_state:
             results.append({"SKU": entry['sku'], "Price": price, "URL": entry['url']})
         
         st.table(pd.DataFrame(results))
+
