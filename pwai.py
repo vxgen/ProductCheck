@@ -5,6 +5,7 @@ import os
 import requests
 import subprocess
 import time
+import random
 from datetime import datetime
 from PIL import Image
 from playwright.sync_api import sync_playwright
@@ -55,11 +56,10 @@ def google_search_deep(query, worldwide=False, num_pages=1):
 
 def analyze_with_vision(image_path, product_name):
     try:
-        # COMPRESSION: Reduces Token usage (TPM) to avoid 429 errors
         with Image.open(image_path) as img:
-            img.thumbnail((800, 800)) 
+            img.thumbnail((1000, 1000)) 
             compressed_path = "small_" + image_path
-            img.save(compressed_path, "JPEG", quality=60)
+            img.save(compressed_path, "JPEG", quality=70)
         
         with open(compressed_path, "rb") as f:
             base64_img = base64.b64encode(f.read()).decode('utf-8')
@@ -69,7 +69,7 @@ def analyze_with_vision(image_path, product_name):
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": f"Find the price for {product_name}. Return ONLY the number. Use 'N/A' if not found."},
+                    {"type": "text", "text": f"Extract the current price for {product_name} from this screenshot. Return ONLY the numeric price. If unavailable, return 'N/A'."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
                 ]
             }],
@@ -78,25 +78,38 @@ def analyze_with_vision(image_path, product_name):
         if os.path.exists(compressed_path): os.remove(compressed_path)
         return response.choices[0].message.content.strip()
     except Exception as e:
-        if "429" in str(e): return "Rate Limited (Wait 60s)"
+        if "429" in str(e): return "Rate Limited"
         return "AI Error"
 
 def run_browser_watch(url, product_name):
+    """Enhanced version to bypass Timeouts and Bot Blocks."""
     with sync_playwright() as p:
+        # Using a more standard browser launch
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(viewport={'width': 1280, 'height': 800})
+        # Randomizing the User-Agent to look like a real Windows Chrome user
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080}
+        )
         page = context.new_page()
         try:
             stealth(page)
-            page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            time.sleep(2) 
+            # Use 'load' instead of 'networkidle' to prevent hanging on tracker scripts
+            page.goto(url, wait_until="load", timeout=60000)
+            
+            # Simulate a human scroll to trigger lazy-loaded prices
+            page.mouse.wheel(0, 500)
+            time.sleep(random.uniform(2, 4))
+            
             img_path = f"snap_{os.getpid()}.png"
-            page.screenshot(path=img_path)
+            # Full page screenshot increases chances of catching the price
+            page.screenshot(path=img_path, full_page=True)
+            
             price = analyze_with_vision(img_path, product_name)
             if os.path.exists(img_path): os.remove(img_path)
             return price
-        except:
-            return "Scan Timeout"
+        except Exception as e:
+            return "Timeout/Block"
         finally:
             browser.close()
 
@@ -105,9 +118,8 @@ st.set_page_config(page_title="Price Watch AI", layout="wide")
 if not st.session_state.get("browser_installed"):
     install_playwright_browsers()
 
-st.title("🛒 Deep Scan Price Watcher (AU Priority)")
+st.title("🛒 AI Price Watcher (Anti-Block Mode)")
 
-# restored SIDEBAR
 with st.sidebar:
     st.header("Search Parameters")
     sku_input = st.text_input("Product Name / SKU", key="sku_entry")
@@ -128,10 +140,7 @@ with st.sidebar:
                             "last_updated": "Never"
                         })
                 st.session_state["items"] = watchlist
-                st.success(f"Added stores for {sku_input}!")
                 st.rerun()
-        else:
-            st.warning("Please enter a SKU.")
 
     if st.button("🗑️ Clear All"):
         st.session_state["items"] = []
@@ -140,10 +149,8 @@ with st.sidebar:
 # --- 5. RESULTS ---
 watchlist = get_watchlist()
 if watchlist:
-    st.subheader(f"Monitoring {len(watchlist)} potential sellers")
+    st.subheader(f"Watchlist ({len(watchlist)} sellers)")
     df = pd.DataFrame(watchlist)
-    
-    # Ensure correct column ordering
     display_cols = [c for c in ["sku", "price", "last_updated", "url"] if c in df.columns]
     st.dataframe(df[display_cols], use_container_width=True)
     
@@ -152,21 +159,18 @@ if watchlist:
         bar = st.progress(0)
         
         for i, item in enumerate(watchlist):
-            status_box.info(f"Scanning {i+1}/{len(watchlist)}: {item['sku']}...")
-            
+            status_box.info(f"Scanning {i+1}/{len(watchlist)}: {item['url'][:50]}...")
             found_price = run_browser_watch(item['url'], item['sku'])
             
-            # Update state
             st.session_state["items"][i]["price"] = found_price
             st.session_state["items"][i]["last_updated"] = datetime.now().strftime("%H:%M")
             bar.progress((i + 1) / len(watchlist))
             
-            # RATE LIMIT SHIELD: Prevents 429 Errors
             if i < len(watchlist) - 1:
-                status_box.warning(f"Cooldown: Waiting 8s for next store...")
+                status_box.warning("API Cooldown: Waiting 8s...")
                 time.sleep(8)
         
-        status_box.success("✅ Full Scan Complete!")
+        status_box.success("✅ Scan Complete!")
         st.rerun()
 else:
-    st.info("Use the sidebar to search for products and populate your watchlist.")
+    st.info("Sidebar: Search for a product to begin.")
