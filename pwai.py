@@ -1,48 +1,49 @@
 import streamlit as st
 import pandas as pd
 import base64
-import requests
-from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
-from openai import OpenAI
-import streamlit as st
 import os
+import requests
 import subprocess
+import sys
+from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth  # Note: 2025 update, use 'stealth' not 'stealth_sync'
+from openai import OpenAI
 
-# This logic ensures the browsers are installed on the Streamlit Cloud server
-try:
-    import playwright
-except ImportError:
-    subprocess.run(["pip", "install", "playwright"])
+# --- 1. CLOUD INSTALLER BLOCK ---
+# This ensures Chromium is installed automatically on the Streamlit server
+def install_playwright_browsers():
+    try:
+        # Check if browser is already there to avoid redundant installs
+        subprocess.run(["playwright", "install", "chromium"], check=True)
+    except Exception as e:
+        st.error(f"Failed to install browser: {e}")
 
-# Check if chromium is already installed, if not, install it
-if not os.path.exists("/home/appuser/.cache/ms-playwright"):
-    subprocess.run(["playwright", "install", "chromium"])
+if "browser_installed" not in st.session_state:
+    with st.spinner("Initializing browser environment..."):
+        install_playwright_browsers()
+        st.session_state.browser_installed = True
 
-# Accessing the values
-api_key = st.secrets["GOOGLE_API_KEY"]
-search_engine_id = st.secrets["GOOGLE_CX"]
-
-st.write(f"Using Search Engine ID: {search_engine_id}")
-
-# Initialize Clients
-# Add your keys to Streamlit Secrets or Environment Variables
+# --- 2. INITIALIZE CLIENTS ---
 OPENAI_KEY = st.secrets.get("OPENAI_API_KEY")
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY")
 GOOGLE_CX = st.secrets.get("GOOGLE_CX")
 
 client = OpenAI(api_key=OPENAI_KEY)
 
+# --- 3. CORE LOGIC ---
+
 def google_search_api(query):
-    """Requirement #3: Conduct Google search for product links using official API."""
+    """Requirement #3: Fetch retail links via Google API."""
     url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&cx={GOOGLE_CX}&q={query}"
-    response = requests.get(url).json()
-    items = response.get("items", [])
-    # Return the first 3 relevant links
-    return [item['link'] for item in items[:3]]
+    try:
+        response = requests.get(url).json()
+        items = response.get("items", [])
+        return [item['link'] for item in items[:3]]
+    except:
+        return []
 
 def analyze_with_vision(image_path, product_name):
-    """Requirement #5: Vision-based price analysis."""
+    """Requirement #5: Vision AI for price extraction."""
     with open(image_path, "rb") as f:
         base64_img = base64.b64encode(f.read()).decode('utf-8')
     
@@ -51,32 +52,34 @@ def analyze_with_vision(image_path, product_name):
         messages=[{
             "role": "user",
             "content": [
-                {"type": "text", "text": f"Extract the current price for {product_name}. Return ONLY the number (e.g. 49.99)."},
+                {"type": "text", "text": f"Extract the price for {product_name}. Return ONLY the number (e.g. 49.99)."},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_img}"}}
             ]
         }]
     )
     return response.choices[0].message.content
 
-def run_browser_watch(url, product_name):
-    """Requirement #5 & #6: Automated navigation and screenshot fallback."""
+def run_browser_watch(url, product_name, search_mode=False):
+    """Requirement #5 & #6: Browser automation."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        stealth_sync(page)
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
+        page = context.new_page()
+        stealth(page) # Updated stealth call
         
         try:
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.goto(url, wait_until="networkidle", timeout=45000)
             
-            # Requirement #6: Fallback to internal search if landing page is generic
-            # (Checks for common search input selectors)
-            search_input = page.locator('input[type="search"], input[name="q"]').first
-            if search_input.is_visible():
-                search_input.fill(product_name)
-                search_input.press("Enter")
-                page.wait_for_load_state("networkidle")
+            # Requirement #6: Internal Search Fallback
+            if search_mode:
+                search_selectors = ['input[type="search"]', 'input[name="q"]', 'input[placeholder*="Search"]']
+                for selector in search_selectors:
+                    if page.locator(selector).is_visible():
+                        page.fill(selector, product_name)
+                        page.press(selector, "Enter")
+                        page.wait_for_load_state("networkidle")
+                        break
 
-            # Requirement #5: Screenshot analysis
             path = f"snap_{os.getpid()}.png"
             page.screenshot(path=path)
             price = analyze_with_vision(path, product_name)
@@ -87,32 +90,27 @@ def run_browser_watch(url, product_name):
         finally:
             browser.close()
 
-# --- STREAMLIT UI ---
+# --- 4. STREAMLIT UI ---
 st.set_page_config(page_title="Pro Price Watcher", layout="wide")
-st.title("🛒 AI-Powered Price Comparison")
+st.title("🛒 AI-Powered Price Watcher v2.0")
 
-
-
-# Requirements #1 & #2
 with st.sidebar:
+    st.header("Add Product")
     sku = st.text_input("Product Name / SKU")
-    manual_url = st.text_input("Manual Link (Optional)")
-    if st.button("Add Product"):
+    manual_url = st.text_input("Target URL (Optional)")
+    if st.button("Add to Watchlist"):
         if "items" not in st.session_state: st.session_state.items = []
-        
-        # Requirement #3: Align search if no manual link
         links = [manual_url] if manual_url else google_search_api(sku)
         for link in links:
             st.session_state.items.append({"sku": sku, "url": link})
+        st.success("Product Added!")
 
-# Requirement #4: Comparison Table
+# Requirement #4: Table
 if "items" in st.session_state:
-    if st.button("Update Price Comparison"):
+    if st.button("🚀 Run Analysis"):
         results = []
         for entry in st.session_state.items:
-            price = run_browser_watch(entry['url'], entry['sku'])
-            results.append({"SKU": entry['sku'], "Price": price, "URL": entry['url']})
-        
+            with st.status(f"Scanning {entry['sku']}..."):
+                price = run_browser_watch(entry['url'], entry['sku'], search_mode=True)
+                results.append({"SKU": entry['sku'], "Price": price, "Source": entry['url']})
         st.table(pd.DataFrame(results))
-
-
