@@ -93,7 +93,6 @@ def run_browser_watch(url, product_name):
             page.screenshot(path=page_path)
             price = analyze_with_vision(page_path, product_name)
             
-            # Thumbnail Generation
             thumb_path = f"thumb_{os.getpid()}.png"
             with Image.open(page_path) as img:
                 w, h = img.size
@@ -146,25 +145,26 @@ with st.sidebar:
         st.session_state["items"] = watchlist
         st.rerun()
 
-    if st.button("🗑️ Clear All Search Records"):
+    if st.button("🗑️ Clear All Records"):
         st.session_state["items"] = []
         st.rerun()
 
-# --- 5. RESULTS TABLE & SCAN LOGIC ---
+# --- 5. RESULTS TABLE ---
 watchlist = get_watchlist()
 
 if watchlist:
     df = pd.DataFrame(watchlist)
     df.insert(0, "Seq", range(1, len(df) + 1))
-    df['Store'] = df['url'].apply(get_store_name)
 
     m1, m2 = st.columns(2)
     m1.metric("Total Items", len(df))
     selected_info = m2.empty()
 
     st.write("### Watchlist")
+    
+    # TABLE CONFIGURATION (Selection + Clickable Links)
     selection_event = st.dataframe(
-        df[["Seq", "img_url", "sku", "price", "last_updated", "Store", "page_url"]],
+        df[["Seq", "img_url", "sku", "price", "last_updated", "url"]],
         use_container_width=True,
         hide_index=True,
         on_select="rerun",
@@ -172,56 +172,45 @@ if watchlist:
         column_config={
             "Seq": st.column_config.NumberColumn("Seq", width="small"),
             "img_url": st.column_config.ImageColumn("Product", width="small"),
-            "page_url": st.column_config.ImageColumn("Snapshot", width="small"),
+            "sku": "Product Name",
+            "price": "Price",
+            "last_updated": "Updated",
+            "url": st.column_config.LinkColumn("Store Link", width="medium")
         }
     )
 
     selected_indices = selection_event.selection.rows
     selected_info.metric("Selected for Scan", len(selected_indices))
 
-    # --- RESTORED ACTION BUTTONS ---
+    # Action Buttons
     btn1, btn2, btn3 = st.columns(3)
     
     with btn1:
-        # THE RESTORED DEEP SCAN BUTTON
         if st.button("🚀 Run Deep Scan on Selected", use_container_width=True):
-            if not selected_indices:
-                st.warning("Please select items in the table first.")
-            else:
+            if selected_indices:
                 status = st.empty()
                 progress_bar = st.progress(0)
                 for i, idx in enumerate(selected_indices):
                     item = st.session_state["items"][idx]
-                    status.info(f"Scanning Store {i+1}/{len(selected_indices)}: {get_store_name(item['url'])}")
-                    
-                    price_val, img_b64, page_b64 = run_browser_watch(item['url'], item['sku'])
-                    
-                    # Update state with Australia/Sydney Time
+                    status.info(f"Scanning {i+1}/{len(selected_indices)}: {get_store_name(item['url'])}")
+                    p_val, img_b64, page_b64 = run_browser_watch(item['url'], item['sku'])
                     aedt_time = (datetime.utcnow() + timedelta(hours=11)).strftime("%H:%M")
                     st.session_state["items"][idx].update({
-                        "price": price_val,
-                        "img_url": img_b64,
-                        "page_url": page_b64,
-                        "last_updated": aedt_time
+                        "price": p_val, "img_url": img_b64, "page_url": page_b64, "last_updated": aedt_time
                     })
                     progress_bar.progress((i + 1) / len(selected_indices))
-                
-                status.success("✅ Scanning sequence complete!")
+                status.success("✅ Scanning complete!")
                 st.rerun()
+            else: st.warning("Select items first.")
 
     with btn2:
         if selected_indices:
-            csv_data = df.iloc[selected_indices].to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Export Selected to CSV", data=csv_data, file_name=f"price_report_{datetime.now().strftime('%Y%m%d')}.csv", use_container_width=True)
-        else:
-            st.button("📥 Export (Select Items)", disabled=True, use_container_width=True)
+            csv = df.iloc[selected_indices].to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Export Selected", data=csv, file_name="prices.csv", use_container_width=True)
 
     with btn3:
         if st.button("❌ Remove Selected", use_container_width=True):
-            if selected_indices:
-                st.session_state["items"] = [item for j, item in enumerate(st.session_state["items"]) if j not in selected_indices]
-                st.rerun()
-            else:
-                st.warning("Select items to remove.")
+            st.session_state["items"] = [item for j, item in enumerate(st.session_state["items"]) if j not in selected_indices]
+            st.rerun()
 else:
-    st.info("Watchlist is empty. Search for SKUs in the sidebar to begin.")
+    st.info("Watchlist is empty. Search for SKUs in the sidebar.")
