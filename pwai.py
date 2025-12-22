@@ -1,12 +1,23 @@
 import streamlit as st
 import pandas as pd
 import base64
-import os
 import requests
 from playwright.sync_api import sync_playwright
 from playwright_stealth import stealth_sync
 from openai import OpenAI
 import streamlit as st
+import os
+import subprocess
+
+# This logic ensures the browsers are installed on the Streamlit Cloud server
+try:
+    import playwright
+except ImportError:
+    subprocess.run(["pip", "install", "playwright"])
+
+# Check if chromium is already installed, if not, install it
+if not os.path.exists("/home/appuser/.cache/ms-playwright"):
+    subprocess.run(["playwright", "install", "chromium"])
 
 # Accessing the values
 api_key = st.secrets["GOOGLE_API_KEY"]
@@ -103,4 +114,5 @@ if "items" in st.session_state:
             results.append({"SKU": entry['sku'], "Price": price, "URL": entry['url']})
         
         st.table(pd.DataFrame(results))
+
 
