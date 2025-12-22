@@ -13,6 +13,12 @@ from openai import OpenAI
 def get_watchlist():
     if "items" not in st.session_state or st.session_state["items"] is None:
         st.session_state["items"] = []
+    
+    # Safety Check: Ensure every item has a 'price' key to prevent KeyErrors
+    for item in st.session_state["items"]:
+        if "price" not in item:
+            item["price"] = "Pending"
+            
     return st.session_state["items"]
 
 if "browser_installed" not in st.session_state:
@@ -36,11 +42,11 @@ client = OpenAI(api_key=OPENAI_KEY)
 # --- 4. CORE FUNCTIONS ---
 
 def google_search_api(query, worldwide=False):
-    """Requirement: Australian Priority with Worldwide fallback."""
+    """Australian Priority Search with Worldwide fallback."""
     if not GOOGLE_API_KEY or not GOOGLE_CX:
         return []
     
-    # 'countryAU' restricts results specifically to Australia
+    # countryAU restricts results specifically to Australian domains/region
     base_url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&cx={GOOGLE_CX}&q={query}"
     
     if not worldwide:
@@ -101,13 +107,12 @@ if not st.session_state.get("browser_installed"):
 
 st.title("🛒 AI Price Watcher (Australia Priority)")
 
-# Sidebar Logic
 with st.sidebar:
     st.header("Search Settings")
     sku_val = st.text_input("SKU / Keywords", key="sku_input")
     
-    # Worldwide Toggle
-    is_worldwide = st.checkbox("Search Worldwide?", help="If unchecked, only Australian sites are searched.")
+    # Worldwide Option
+    is_worldwide = st.checkbox("Search Worldwide?", help="Unchecked = Australia only.")
     
     url_val = st.text_input("Store URL (Optional)", key="url_input")
     
@@ -119,13 +124,12 @@ with st.sidebar:
                 
                 if found_links:
                     for link in found_links:
-                        # Adding 'N/A' as placeholder price for the table
                         items.append({"sku": sku_val, "url": link, "price": "Pending"})
                     st.session_state["items"] = items
                     st.rerun()
                 else:
                     if not is_worldwide:
-                        st.warning("No AU links found. Try checking 'Search Worldwide'.")
+                        st.warning("No AU links found. Check 'Search Worldwide' and try again?")
                     else:
                         st.error("No links found.")
         else:
@@ -141,35 +145,29 @@ watchlist = get_watchlist()
 if len(watchlist) > 0:
     st.subheader("Your Watchlist")
     
-    # Show current list with Price column as requested
+    # SECURE DATAFRAME CREATION
     df_preview = pd.DataFrame(watchlist)
-    # Reordering columns for better view
-    df_preview = df_preview[["sku", "price", "url"]]
-    st.table(df_preview)
+    
+    # Ensure columns exist before reordering to prevent KeyErrors
+    available_cols = df_preview.columns.tolist()
+    desired_order = [c for c in ["sku", "price", "url"] if c in available_cols]
+    
+    st.table(df_preview[desired_order])
     
     if st.button("🚀 Start Scanning Prices"):
-        results = []
         progress = st.progress(0)
         
         for i, item in enumerate(watchlist):
             with st.status(f"Scanning {item.get('sku')}...") as status:
                 price = run_browser_watch(item.get('url'), item.get('sku'))
                 
-                # Update the original watchlist in session state
+                # Update the session state directly
                 st.session_state["items"][i]["price"] = price
                 
-                results.append({
-                    "Product": item.get('sku'),
-                    "Price": price,
-                    "Source": item.get('url')
-                })
                 progress.progress((i + 1) / len(watchlist))
                 status.update(label=f"Finished {item.get('sku')}", state="complete")
         
-        st.divider()
-        st.subheader("Final Comparison Table")
-        st.dataframe(pd.DataFrame(results), use_container_width=True)
-        # Final rerun to update the 'Pending' prices in the top table
-        st.rerun()
+        st.success("All scans complete!")
+        st.rerun() # Refresh to show prices in the table above
 else:
-    st.info("Sidebar: Add a product to begin. Searches prioritize Australian retailers by default.")
+    st.info("Sidebar: Add a product to begin. Australian retailers are prioritized by default.")
