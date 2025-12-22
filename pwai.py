@@ -4,7 +4,7 @@ import base64
 import os
 import requests
 import subprocess
-import sys
+from datetime import datetime
 from playwright.sync_api import sync_playwright
 from playwright_stealth import stealth
 from openai import OpenAI
@@ -14,10 +14,12 @@ def get_watchlist():
     if "items" not in st.session_state or st.session_state["items"] is None:
         st.session_state["items"] = []
     
-    # Safety Check: Ensure every item has a 'price' key to prevent KeyErrors
+    # Ensure every item has 'price' and 'last_updated' keys
     for item in st.session_state["items"]:
         if "price" not in item:
             item["price"] = "Pending"
+        if "last_updated" not in item:
+            item["last_updated"] = "Never"
             
     return st.session_state["items"]
 
@@ -40,15 +42,11 @@ GOOGLE_CX = st.secrets.get("GOOGLE_CX")
 client = OpenAI(api_key=OPENAI_KEY)
 
 # --- 4. CORE FUNCTIONS ---
-
 def google_search_api(query, worldwide=False):
-    """Australian Priority Search with Worldwide fallback."""
     if not GOOGLE_API_KEY or not GOOGLE_CX:
         return []
     
-    # countryAU restricts results specifically to Australian domains/region
     base_url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&cx={GOOGLE_CX}&q={query}"
-    
     if not worldwide:
         base_url += "&cr=countryAU"
     
@@ -68,7 +66,7 @@ def analyze_with_vision(image_path, product_name):
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": f"Find the price for {product_name}. Return ONLY the number (e.g. 150.00). If not found, return 'N/A'."},
+                    {"type": "text", "text": f"Find the price for {product_name}. Return ONLY the number. If not found, return 'N/A'."},
                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_img}"}}
                 ]
             }],
@@ -101,37 +99,40 @@ def run_browser_watch(url, product_name):
 
 # --- 5. UI LAYOUT ---
 st.set_page_config(page_title="AU Price Watcher", layout="wide")
-
 if not st.session_state.get("browser_installed"):
     install_playwright_browsers()
 
-st.title("🛒 AI Price Watcher (Australia Priority)")
+st.title("🛒 AI Price Watcher (AU Priority)")
 
 with st.sidebar:
     st.header("Search Settings")
     sku_val = st.text_input("SKU / Keywords", key="sku_input")
-    
-    # Worldwide Option
-    is_worldwide = st.checkbox("Search Worldwide?", help="Unchecked = Australia only.")
-    
-    url_val = st.text_input("Store URL (Optional)", key="url_input")
+    is_worldwide = st.checkbox("Search Worldwide?", value=False)
     
     if st.button("Add to Watchlist"):
         if sku_val:
             items = get_watchlist()
-            with st.spinner(f"Searching {'Worldwide' if is_worldwide else 'Australia'}..."):
-                found_links = [url_val] if url_val else google_search_api(sku_val, worldwide=is_worldwide)
+            with st.spinner(f"Searching..."):
+                found_links = google_search_api(sku_val, worldwide=is_worldwide)
                 
                 if found_links:
                     for link in found_links:
-                        items.append({"sku": sku_val, "url": link, "price": "Pending"})
+                        items.append({
+                            "sku": sku_val, 
+                            "url": link, 
+                            "price": "Pending", 
+                            "last_updated": "Never"
+                        })
                     st.session_state["items"] = items
                     st.rerun()
                 else:
                     if not is_worldwide:
-                        st.warning("No AU links found. Check 'Search Worldwide' and try again?")
+                        st.warning("No AU links found.")
+                        if st.button("Retry Search Worldwide?"):
+                            # This button appears if AU search fails
+                            st.session_state["worldwide_retry"] = True
                     else:
-                        st.error("No links found.")
+                        st.error("No links found anywhere.")
         else:
             st.warning("Enter a SKU.")
 
@@ -144,30 +145,28 @@ watchlist = get_watchlist()
 
 if len(watchlist) > 0:
     st.subheader("Your Watchlist")
-    
-    # SECURE DATAFRAME CREATION
     df_preview = pd.DataFrame(watchlist)
     
-    # Ensure columns exist before reordering to prevent KeyErrors
-    available_cols = df_preview.columns.tolist()
-    desired_order = [c for c in ["sku", "price", "url"] if c in available_cols]
-    
-    st.table(df_preview[desired_order])
+    # Display table with Timestamp
+    cols = [c for c in ["sku", "price", "last_updated", "url"] if c in df_preview.columns]
+    st.table(df_preview[cols])
     
     if st.button("🚀 Start Scanning Prices"):
         progress = st.progress(0)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         
         for i, item in enumerate(watchlist):
             with st.status(f"Scanning {item.get('sku')}...") as status:
                 price = run_browser_watch(item.get('url'), item.get('sku'))
                 
-                # Update the session state directly
+                # Update data and timestamp
                 st.session_state["items"][i]["price"] = price
+                st.session_state["items"][i]["last_updated"] = timestamp
                 
                 progress.progress((i + 1) / len(watchlist))
-                status.update(label=f"Finished {item.get('sku')}", state="complete")
+                status.update(label=f"Done: {item.get('sku')}", state="complete")
         
-        st.success("All scans complete!")
-        st.rerun() # Refresh to show prices in the table above
+        st.success(f"Updated at {timestamp}")
+        st.rerun()
 else:
-    st.info("Sidebar: Add a product to begin. Australian retailers are prioritized by default.")
+    st.info("Sidebar: Add a product to begin.")
