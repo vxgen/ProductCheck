@@ -9,8 +9,7 @@ from playwright.sync_api import sync_playwright
 from playwright_stealth import stealth
 from openai import OpenAI
 
-# --- 1. GLOBAL SESSION INITIALIZATION (CRITICAL FIX) ---
-# This must run before any other logic to prevent AttributeErrors
+# --- 1. GLOBAL SESSION INITIALIZATION ---
 if "items" not in st.session_state or st.session_state.items is None:
     st.session_state["items"] = []
 
@@ -34,9 +33,7 @@ GOOGLE_CX = st.secrets.get("GOOGLE_CX")
 client = OpenAI(api_key=OPENAI_KEY)
 
 # --- 4. CORE FUNCTIONS ---
-
 def google_search_api(query):
-    """Requirement #3: Fetch links via Google. Returns empty list if fails."""
     if not GOOGLE_API_KEY or not GOOGLE_CX:
         return []
     url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&cx={GOOGLE_CX}&q={query}"
@@ -48,7 +45,6 @@ def google_search_api(query):
         return []
 
 def analyze_with_vision(image_path, product_name):
-    """Requirement #5: Use the $5 credit for Vision AI analysis."""
     try:
         with open(image_path, "rb") as f:
             base64_img = base64.b64encode(f.read()).decode('utf-8')
@@ -69,7 +65,6 @@ def analyze_with_vision(image_path, product_name):
         return f"Error: {str(e)}"
 
 def run_browser_watch(url, product_name):
-    """Requirement #5 & #6: Stealth browsing and screenshot."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
@@ -78,8 +73,6 @@ def run_browser_watch(url, product_name):
         
         try:
             page.goto(url, wait_until="networkidle", timeout=60000)
-            
-            # Requirement #6: Internal Search Fallback
             search_box = page.locator('input[type="search"], input[name="q"]').first
             if search_box.is_visible():
                 search_box.fill(product_name)
@@ -109,16 +102,15 @@ with st.sidebar:
     
     if st.button("Add to Watchlist"):
         if sku_val:
-            # Re-verify list existence immediately before appending
             if "items" not in st.session_state or st.session_state.items is None:
                 st.session_state.items = []
-                
+            
             with st.spinner("Fetching links..."):
                 found_links = [url_val] if url_val else google_search_api(sku_val)
                 if found_links:
                     for link in found_links:
                         st.session_state.items.append({"sku": sku_val, "url": link})
-                    st.success(f"Added {sku_val}")
+                    st.rerun() # Refresh to show new items immediately
                 else:
                     st.error("No links found.")
         else:
@@ -130,13 +122,16 @@ with st.sidebar:
 
 # --- 6. DISPLAY & ANALYSIS ---
 if st.session_state.items:
+    # Double-check that it's a list for Pandas
+    watchlist_data = list(st.session_state.items) 
+    
     st.subheader("Your Watchlist")
     
     if st.button("🚀 Run Price Comparison Analysis"):
         results = []
         progress = st.progress(0)
         
-        for i, item in enumerate(st.session_state.items):
+        for i, item in enumerate(watchlist_data):
             with st.status(f"Scanning {item['sku']}...") as status:
                 price = run_browser_watch(item['url'], item['sku'])
                 results.append({
@@ -144,13 +139,16 @@ if st.session_state.items:
                     "Price": price,
                     "Source": item['url']
                 })
-                progress.progress((i + 1) / len(st.session_state.items))
+                progress.progress((i + 1) / len(watchlist_data))
                 status.update(label="Complete!", state="complete")
         
         st.divider()
         st.subheader("Results Table")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
     else:
-        st.table(pd.DataFrame(st.session_state.items))
+        # Fixed line with data safety check
+        df_display = pd.DataFrame(watchlist_data)
+        if not df_display.empty:
+            st.table(df_display)
 else:
     st.info("Sidebar: Add a product to begin.")
