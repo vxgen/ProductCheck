@@ -1,6 +1,6 @@
 streamlit
-playwright
-playwright-stealth
+playwright==1.49.1
+playwright-stealth==1.0.6
 openai
 easyocr
 pandas
