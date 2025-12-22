@@ -1,0 +1,5 @@
+playwright
+libevent-2.1-7
+libnss3
+libnspr4
+libasound2
