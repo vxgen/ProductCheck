@@ -6,7 +6,7 @@ import hashlib
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
-# --- AUTH HELPERS (Same as before) ---
+# --- AUTH HELPERS ---
 def hash_pw(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
@@ -24,7 +24,7 @@ def check_login(username, password):
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 
-# --- LOGIN PAGE (Same as before) ---
+# --- LOGIN PAGE ---
 def login_page():
     st.title("🔐 Login")
     tab1, tab2 = st.tabs(["Login", "Register"])
@@ -66,15 +66,12 @@ def main_app():
             if not results.empty:
                 st.write(f"Found {len(results)} items")
                 for i, row in results.iterrows():
-                    # Dynamic display of all columns
                     name_display = row.get("Product Name", row.get("name", "Item"))
                     with st.expander(f"{name_display}"):
                         for col in results.columns:
-                            # Hide system columns or price initially
                             if col not in ['category', 'last_updated', 'Price', 'price']:
                                 st.write(f"**{col}:** {row[col]}")
                         
-                        # Price Reveal
                         price_key = 'Price' if 'Price' in row else 'price'
                         if price_key in row:
                             if st.button("View Price", key=f"p_{i}"):
@@ -82,7 +79,7 @@ def main_app():
             else:
                 st.warning("No matches found.")
 
-    # 2. SETTINGS (Manage Columns)
+    # 2. SETTINGS (Schema)
     elif menu == "Settings (Schema)":
         st.header("⚙️ Configure Target Format")
         st.info("Define the standard columns for your database and output files.")
@@ -109,11 +106,20 @@ def main_app():
     elif menu == "Upload & Mapping":
         st.header("📂 File Upload & Auto-Map")
         
-        # Category
-        cats = dm.get_categories()
-        cat_sel = st.selectbox("Select Category", cats)
+        # --- FIXED: Added Category Creation Back ---
+        c_sel, c_add = st.columns([2, 1])
         
-        # Get Standard Schema
+        cats = dm.get_categories()
+        cat_sel = c_sel.selectbox("Select Category", cats)
+        
+        new_cat = c_add.text_input("Or Add New Category")
+        if c_add.button("Add Category"):
+            if new_cat:
+                dm.add_category(new_cat, st.session_state['user'])
+                st.success(f"Added '{new_cat}'")
+                st.rerun()
+        # -------------------------------------------
+
         target_columns = dm.get_schema()
         if not target_columns:
             st.error("Please configure columns in 'Settings' first!")
@@ -129,21 +135,17 @@ def main_app():
                 
                 st.write("Preview:", df.head(3))
                 
-                # --- MAPPING INTERFACE ---
                 st.subheader("Map Columns")
                 mapping = {}
-                cols = st.columns(3) # Create a grid for selectors
+                cols = st.columns(3)
                 
                 file_cols = list(df.columns)
                 
                 for i, target_col in enumerate(target_columns):
-                    # AUTO-MAPPING LOGIC
-                    # If target name matches a file column exactly, pre-select it
                     default_idx = 0
                     if target_col in file_cols:
                         default_idx = file_cols.index(target_col)
                     
-                    # Display selector
                     with cols[i % 3]:
                         selected_col = st.selectbox(
                             f"Map to '{target_col}'", 
@@ -154,17 +156,13 @@ def main_app():
                         mapping[target_col] = selected_col
                 
                 if st.button(f"Format & Save {file.name}", key=f"btn_{file.name}"):
-                    # Construct new DF based on mapping
                     new_data = {}
                     for target, source in mapping.items():
                         new_data[target] = df[source]
                     
                     clean_df = pd.DataFrame(new_data)
-                    
-                    # Save
                     dm.save_products_dynamic(clean_df, cat_sel, st.session_state['user'])
                     
-                    # Download
                     output = BytesIO()
                     with pd.ExcelWriter(output) as writer:
                         clean_df.to_excel(writer, index=False)
