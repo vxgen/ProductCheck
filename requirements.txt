@@ -1,8 +1,5 @@
 streamlit
 pandas
 gspread
-google-auth
-playwright
-Pillow
-openai
-requests
+oauth2client
+openpyxl
