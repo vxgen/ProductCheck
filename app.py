@@ -85,45 +85,66 @@ def main_app():
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
         
-        tab_search, tab_browse = st.tabs(["Search by Keyword", "Browse Full Category"])
+        tab_search, tab_browse = st.tabs(["Search (Predictive)", "Browse Full Category"])
         
-        # --- TAB 1: SEARCH ---
+        # --- TAB 1: PREDICTIVE SEARCH ---
         with tab_search:
             if st.button("Refresh Database"):
                 dm.get_all_products_df.clear()
                 st.success("Database refreshed!")
 
-            query = st.text_input("Enter Product Name/Model")
+            # 1. Get Data First
+            df = dm.get_all_products_df()
             
-            if query:
-                df = dm.get_all_products_df()
-                if not df.empty:
-                    df = clean_display_df(df)
-                    
-                    mask = df.astype(str).apply(lambda x: x.str.contains(query, case=False, na=False)).any(axis=1)
-                    results = df[mask]
+            if not df.empty:
+                # 2. Find the column that contains the "Name" (e.g., Product Name, Model, etc.)
+                # We prioritize columns with 'name', 'model', or 'item' in the header
+                name_cols = [c for c in df.columns if 'name' in c.lower() or 'model' in c.lower() or 'item' in c.lower()]
+                
+                if name_cols:
+                    search_col = name_cols[0] # Use the best match found
+                else:
+                    search_col = df.columns[0] # Fallback to first column
+
+                # 3. Create List for Predictive Dropdown
+                # Convert to string and drop duplicates/empty
+                all_items = df[search_col].astype(str).unique().tolist()
+                all_items = sorted([x for x in all_items if x and x != 'nan'])
+                
+                # 4. PREDICTIVE INPUT WIDGET
+                # "index=None" makes it empty by default
+                # As user types, Streamlit filters this list automatically!
+                selected_item = st.selectbox(
+                    f"Start typing to search ({search_col})...", 
+                    options=all_items,
+                    index=None,
+                    placeholder="Type product name..."
+                )
+                
+                # 5. Display Result
+                if selected_item:
+                    # Filter DF by exact selection
+                    results = df[df[search_col].astype(str) == selected_item]
+                    # Clean display (hide empty columns)
+                    results = clean_display_df(results)
                     
                     if not results.empty:
-                        st.write(f"Found {len(results)} items")
                         for i, row in results.iterrows():
-                            # Heuristic for name display
-                            name_cols = [c for c in df.columns if 'name' in c.lower() or 'model' in c.lower()]
-                            name_display = row[name_cols[0]] if name_cols else "Item"
-                            
-                            with st.expander(f"{name_display}"):
+                            # Header of the card
+                            with st.expander(f"{row[search_col]}", expanded=True):
+                                # Show all columns except price
                                 for col in results.columns:
                                     if 'price' not in col.lower() and 'cost' not in col.lower():
                                         st.write(f"**{col}:** {row[col]}")
                                 
+                                # View Price Button
                                 price_cols = [c for c in df.columns if 'price' in c.lower() or 'cost' in c.lower()]
                                 if price_cols:
                                     if st.button("View Price", key=f"p_{i}"):
                                         for p_col in price_cols:
                                             st.metric(p_col, row[p_col])
-                    else:
-                        st.warning("No matches found.")
-                else:
-                    st.warning("Database is empty.")
+            else:
+                st.warning("Database is empty. Please upload data first.")
 
         # --- TAB 2: BROWSE ---
         with tab_browse:
