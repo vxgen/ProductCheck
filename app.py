@@ -102,14 +102,11 @@ def main_app():
         with tab_search:
             if not df.empty:
                 # --- HELPER: ROBUST DATA CHECK ---
-                # Ensures we don't pick empty columns or columns with just "nan"
                 def col_has_data(dataframe, col_name):
                     if col_name not in dataframe.columns: return False
-                    # Convert to string, strip whitespace
                     s = dataframe[col_name].astype(str).str.strip()
-                    # FIX: Use .str.lower() instead of .lower()
+                    # Check against common empty values
                     is_empty = s.str.lower().isin(['nan', 'none', '', 'nat'])
-                    # If ALL values are empty/nan, return False. Otherwise True.
                     return not is_empty.all()
 
                 # Identify columns that actually have text
@@ -131,43 +128,61 @@ def main_app():
                             if 'model' in col.lower():
                                 name_col = col
                                 break
-                    # Priority 3: Fallback to first valid column
+                    # Priority 3: Fallback
                     if not name_col: name_col = valid_data_cols[0]
 
-                    # --- STEP B: BUILD SEARCH OPTIONS ---
+                    # --- STEP B: BUILD "SEARCH EVERYTHING" LABEL ---
                     search_df = df.copy()
 
-                    def make_label(row):
-                        # Get main name
+                    # Define keywords to EXCLUDE from the search string (to keep it clean/private)
+                    # We exclude Price from the search string so it remains hidden until clicked.
+                    # We exclude Timestamps so the search result isn't messy.
+                    forbidden_in_search = ['price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
+                                           'date', 'time', 'last_updated', 'timestamp']
+
+                    def make_search_label(row):
+                        # 1. Start with the Name (Most important)
                         main_name = str(row[name_col]) if pd.notnull(row[name_col]) else ""
-                        label = main_name.strip()
-                        # Skip if the name itself is essentially empty
-                        if not label or label.lower() == 'nan': return None 
+                        label_parts = [main_name.strip()]
 
-                        # Append SKU if exists
-                        sku_c = next((c for c in valid_data_cols if 'sku' in c.lower() and c != name_col), None)
-                        if sku_c:
-                            val = str(row[sku_c]).strip()
-                            if val and val.lower() != 'nan':
-                                label += f" | {val}"
-                        return label
+                        # 2. Loop through other valid columns to append unique info
+                        for col in valid_data_cols:
+                            # Skip the name column (already added)
+                            if col == name_col: continue
+                            
+                            # Skip Forbidden columns (Privacy & Cleanliness)
+                            if any(k in col.lower() for k in forbidden_in_search): continue
+                            
+                            val = str(row[col]).strip()
+                            # Only add if it has real data
+                            if val and val.lower() not in ['nan', 'none', '']:
+                                # Avoid adding duplicate info (e.g. if SKU is same as Name)
+                                if val not in label_parts:
+                                    label_parts.append(val)
+                        
+                        # 3. Join them cleanly
+                        # Result: "Monitor X | SKU123 | Black | 27 inch | IPS"
+                        full_label = " | ".join(filter(None, label_parts))
+                        return full_label
 
-                    search_df['Search_Label'] = search_df.apply(make_label, axis=1)
+                    search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
+                    
                     # Filter out None and sort
                     search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
 
                     # --- STEP C: SEARCH WIDGET ---
+                    # Now that the label contains specs/color/etc, typing "Black" will find the product!
                     selected_label = st.selectbox(
-                        label=f"Start typing to search ({name_col})...",
+                        label=f"Start typing to search (Name, SKU, Specs, etc.)...",
                         options=search_options,
                         index=None,
-                        placeholder="Type Product Name or SKU...",
-                        help="Predictive search filters as you type."
+                        placeholder="Type any detail (e.g. '27 inch' or 'IPS')...",
+                        help="You can search by Name, SKU, Category, or Specifications."
                     )
                     
                     st.divider()
 
-                    # --- STEP D: SHOW RESULTS (Strict Privacy) ---
+                    # --- STEP D: SHOW RESULTS ---
                     if selected_label:
                         results = search_df[search_df['Search_Label'] == selected_label]
                         results = results.drop(columns=['Search_Label'])
@@ -176,19 +191,15 @@ def main_app():
                             for i, row in results.iterrows():
                                 card_title = str(row[name_col])
                                 with st.expander(f"📦 {card_title}", expanded=True):
-                                    # Define hidden keywords (case-insensitive partial match)
-                                    # This hides Price, Cost, SRP, MSRP, RRP, Margin, etc.
+                                    # Define hidden keywords for DISPLAY
                                     hidden_keywords = ['price', 'cost', 'srp', 'msrp', 'rrp', 'margin']
                                     
                                     all_cols = results.columns.tolist()
-                                    # Identify price columns
                                     price_cols = [c for c in all_cols if any(k in c.lower() for k in hidden_keywords)]
-                                    # Identify public columns (exclude price cols and system cols like 'Search_Label')
                                     public_cols = [c for c in all_cols if c not in price_cols and c != 'Search_Label']
                                     
                                     # Display Public Data
                                     for col in public_cols:
-                                        # Only show if value is not empty
                                         val = str(row[col]).strip()
                                         if val and val.lower() != 'nan':
                                             st.write(f"**{col}:** {row[col]}")
@@ -206,9 +217,8 @@ def main_app():
             else:
                 st.warning("Database is empty. Please upload a file in the Admin tab.")
 
-        # --- TAB 2: BROWSE FULL CATEGORY (Restored) ---
+        # --- TAB 2: BROWSE FULL CATEGORY ---
         with tab_browse:
-            # Re-fetch categories
             cats = dm.get_categories()
             if not cats:
                 st.warning("No categories found.")
@@ -216,14 +226,12 @@ def main_app():
                 cat_sel = st.selectbox("Select Category to View", cats)
                 
                 if not df.empty and 'category' in df.columns:
-                    # Filter by selected category
                     cat_data = df[df['category'] == cat_sel]
                     
                     if not cat_data.empty:
                         st.write(f"**Total Items:** {len(cat_data)}")
                         st.dataframe(cat_data, use_container_width=True)
                         
-                        # Download Button
                         output = BytesIO()
                         with pd.ExcelWriter(output) as writer:
                             cat_data.to_excel(writer, index=False)
