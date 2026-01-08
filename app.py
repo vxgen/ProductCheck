@@ -71,7 +71,7 @@ def main_app():
         st.rerun()
         
     # --- NAVIGATION MENU ---
-    menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload (Direct)", "Data Update"])
+    menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload (Direct)", "Data Update (Direct)"])
     
     # =======================================================
     # 1. PRODUCT SEARCH & BROWSE
@@ -246,6 +246,7 @@ def main_app():
     # =======================================================
     elif menu == "Upload (Direct)":
         st.header("📂 File Upload (Direct)")
+        st.info("Files uploaded here are saved with their original table structure.")
         
         # 1. Category Selection
         c_left, c_right = st.columns([1, 1])
@@ -276,19 +277,15 @@ def main_app():
                     else: 
                         df = pd.read_excel(file)
                     
-                    # Cleanup: Drop completely empty rows/cols
+                    # Cleanup
                     df = df.dropna(how='all').dropna(axis=1, how='all')
                     
-                    st.write("Preview of original file (Ready to Save):", df.head(3))
+                    st.write("Preview (No Mapping Required):", df.head(3))
                     
-                    # Direct Save Button
-                    if st.button(f"☁️ Save '{file.name}' to Database", key=f"save_{file.name}"):
-                        # Pass the RAW dataframe to the backend.
-                        # It will save the columns exactly as they are in the file.
+                    # Direct Save
+                    if st.button(f"☁️ Save '{file.name}'", key=f"save_{file.name}"):
                         dm.save_products_dynamic(df, cat_sel, st.session_state['user'])
-                        st.success(f"Successfully saved {len(df)} rows to category '{cat_sel}'!")
-                        
-                        # Wait briefly then reload
+                        st.success(f"Saved {len(df)} rows to '{cat_sel}'!")
                         time.sleep(1)
                         st.rerun()
                         
@@ -296,11 +293,11 @@ def main_app():
                     st.error(f"Error processing file: {e}")
 
     # =======================================================
-    # 3. DATA UPDATE
+    # 3. DATA UPDATE (DIRECT - NO MAPPING)
     # =======================================================
-    elif menu == "Data Update":
+    elif menu == "Data Update (Direct)":
         st.header("🔄 Update Existing Category")
-        st.info("Upload a new file to identify changes, new items, and EOL items.")
+        st.info("Upload a new file to identify changes (New vs EOL). The file structure must match your original upload.")
         
         cats = dm.get_categories()
         cat_sel = st.selectbox("Category to Update", cats)
@@ -308,48 +305,38 @@ def main_app():
         up_file = st.file_uploader("Upload New Pricebook")
         
         if up_file:
-            if up_file.name.endswith('csv'): df = pd.read_csv(up_file)
-            else: df = pd.read_excel(up_file)
-            
-            target_columns = dm.get_schema()
-            
-            st.subheader("Map Columns for Update")
-            mapping = {}
-            cols = st.columns(3)
-            file_cols = ["(Skip)"] + list(df.columns)
-            
-            for i, target_col in enumerate(target_columns):
-                match_found = None
-                if target_col in df.columns: match_found = target_col
-                if not match_found:
-                    fuzzy_guess = find_best_match(target_col, list(df.columns))
-                    if fuzzy_guess: match_found = fuzzy_guess
+            try:
+                if up_file.name.endswith('csv'): df = pd.read_csv(up_file)
+                else: df = pd.read_excel(up_file)
                 
+                df = df.dropna(how='all').dropna(axis=1, how='all')
+                
+                st.write("File Preview:", df.head(3))
+                
+                # NO MAPPING LOGIC. Just ask for the ID column.
+                st.markdown("### Select Unique ID")
+                st.caption("We need one column (e.g., SKU or Model Name) to identify which products are new or removed.")
+                
+                # Try to auto-guess the ID column
                 default_idx = 0
-                if match_found: default_idx = file_cols.index(match_found)
+                cols = list(df.columns)
+                for i, col in enumerate(cols):
+                    if 'sku' in col.lower() or 'model' in col.lower():
+                        default_idx = i
+                        break
+                        
+                key_col = st.selectbox("Unique ID Column:", cols, index=default_idx)
 
-                with cols[i % 3]:
-                    selected_col = st.selectbox(
-                        f"Target: **{target_col}**", file_cols, index=default_idx, key=f"up_{target_col}")
-                    if selected_col != "(Skip)":
-                        mapping[target_col] = selected_col
-
-            key_col = st.selectbox("Which target column is the Unique ID?", target_columns)
-
-            if st.button("Analyze Differences & Update"):
-                new_data = {}
-                for target, source in mapping.items():
-                    new_data[target] = df[source]
-                clean_df = pd.DataFrame(new_data)
-                
-                if key_col not in clean_df.columns:
-                    st.error(f"You must map the Key Column: {key_col}")
-                else:
-                    res = dm.update_products_dynamic(clean_df, cat_sel, st.session_state['user'], key_col)
+                if st.button("Analyze Differences & Update"):
+                    # Pass the RAW dataframe directly. No mapping.
+                    res = dm.update_products_dynamic(df, cat_sel, st.session_state['user'], key_col)
                     if "error" in res:
                         st.error(res["error"])
                     else:
                         st.success(f"Update Complete! New Items: {res['new']}, Marked EOL: {res['eol']}")
+                        
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
 
 if st.session_state['logged_in']:
     main_app()
