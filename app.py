@@ -3,22 +3,15 @@ import pandas as pd
 import data_manager as dm
 from io import BytesIO
 import hashlib
-import difflib  # Built-in library for fuzzy matching
+import difflib
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
 # --- HELPER: FUZZY MATCHING ---
 def find_best_match(target, options):
-    """
-    Returns the best match from 'options' for 'target'.
-    cutoff=0.4 means it needs to be at least 40% similar to match.
-    """
-    # Convert everything to lower case for comparison
     options_lower = [o.lower() for o in options]
     matches = difflib.get_close_matches(target.lower(), options_lower, n=1, cutoff=0.4)
-    
     if matches:
-        # Find the original case-sensitive name of the match
         match_index = options_lower.index(matches[0])
         return options[match_index]
     return None
@@ -76,35 +69,79 @@ def main_app():
         st.session_state['logged_in'] = False
         st.rerun()
         
-    menu = st.sidebar.radio("Navigate", ["Product Check", "Upload & Mapping", "Data Update"])
+    # --- NAVIGATION MENU ---
+    menu = st.sidebar.radio("Navigate", ["Product Check", "Full Pricebook", "Upload & Mapping", "Data Update"])
     
-    # 1. PRODUCT CHECK
+    # 1. PRODUCT CHECK (Search)
     if menu == "Product Check":
         st.header("🔎 Product Check")
-        query = st.text_input("Search Product")
-        if query:
-            results = dm.search_products(query)
-            if not results.empty:
-                st.write(f"Found {len(results)} items")
-                for i, row in results.iterrows():
-                    name_display = row.get("Product Name", row.get("name", "Item"))
-                    with st.expander(f"{name_display}"):
-                        for col in results.columns:
-                            if col not in ['category', 'last_updated', 'Price', 'price']:
-                                st.write(f"**{col}:** {row[col]}")
-                        
-                        price_key = 'Price' if 'Price' in row else 'price'
-                        if price_key in row:
-                            if st.button("View Price", key=f"p_{i}"):
-                                st.metric("Price", row[price_key])
-            else:
-                st.warning("No matches found.")
+        if st.button("Refresh Database"):
+            dm.get_all_products_df.clear()
+            st.success("Database refreshed!")
 
-    # 2. UPLOAD & MAPPING
+        query = st.text_input("Search Product")
+        
+        if query:
+            df = dm.get_all_products_df()
+            if not df.empty:
+                mask = df.astype(str).apply(lambda x: x.str.contains(query, case=False, na=False)).any(axis=1)
+                results = df[mask]
+                
+                if not results.empty:
+                    st.write(f"Found {len(results)} items")
+                    for i, row in results.iterrows():
+                        name_display = row.get("Product Name", row.get("name", "Item"))
+                        with st.expander(f"{name_display}"):
+                            for col in results.columns:
+                                if col not in ['category', 'last_updated', 'Price', 'price']:
+                                    st.write(f"**{col}:** {row[col]}")
+                            
+                            price_key = 'Price' if 'Price' in row else 'price'
+                            if price_key in row:
+                                if st.button("View Price", key=f"p_{i}"):
+                                    st.metric("Price", row[price_key])
+                else:
+                    st.warning("No matches found.")
+            else:
+                st.warning("Database is empty.")
+
+    # 2. FULL PRICEBOOK (View by Category)
+    elif menu == "Full Pricebook":
+        st.header("📖 Full Pricebook Viewer")
+        cats = dm.get_categories()
+        
+        if not cats:
+            st.warning("No categories found.")
+        else:
+            cat_sel = st.selectbox("Select Category to View", cats)
+            
+            # Get full data and filter
+            df = dm.get_all_products_df()
+            if not df.empty:
+                cat_data = df[df['category'] == cat_sel]
+                
+                if not cat_data.empty:
+                    st.write(f"**Total Items:** {len(cat_data)}")
+                    st.dataframe(cat_data)
+                    
+                    # Download Button
+                    output = BytesIO()
+                    with pd.ExcelWriter(output) as writer:
+                        cat_data.to_excel(writer, index=False)
+                    
+                    st.download_button(
+                        label=f"⬇️ Download '{cat_sel}' Pricebook",
+                        data=output.getvalue(),
+                        file_name=f"{cat_sel}_Pricebook.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    st.info(f"No data found for category: {cat_sel}")
+
+    # 3. UPLOAD & MAPPING
     elif menu == "Upload & Mapping":
         st.header("📂 File Upload & Schema Config")
         
-        # Top Section: Categories & Schema
         c_left, c_right = st.columns([1, 1])
         with c_left:
             st.subheader("1. Category Selection")
@@ -142,7 +179,6 @@ def main_app():
                         st.rerun()
         st.divider()
 
-        # Upload & Map
         target_columns = dm.get_schema()
         files = st.file_uploader("Upload Excel/CSV", accept_multiple_files=True)
         
@@ -154,28 +190,20 @@ def main_app():
                 
                 st.write("Preview:", df.head(3))
                 
-                # --- AUTO-MAPPING LOGIC (FUZZY) ---
                 st.info("Mapping Columns (Smart Match Active)")
                 mapping = {}
                 cols = st.columns(3)
                 file_cols = ["(Skip)"] + list(df.columns)
                 
                 for i, target_col in enumerate(target_columns):
-                    # 1. Try Exact Match
                     match_found = None
-                    if target_col in df.columns:
-                        match_found = target_col
-                    
-                    # 2. If no exact match, try Fuzzy Match
+                    if target_col in df.columns: match_found = target_col
                     if not match_found:
                         fuzzy_guess = find_best_match(target_col, list(df.columns))
-                        if fuzzy_guess:
-                            match_found = fuzzy_guess
+                        if fuzzy_guess: match_found = fuzzy_guess
                     
-                    # 3. Determine Dropdown Index
                     default_idx = 0
-                    if match_found:
-                        default_idx = file_cols.index(match_found)
+                    if match_found: default_idx = file_cols.index(match_found)
 
                     with cols[i % 3]:
                         selected_col = st.selectbox(
@@ -187,10 +215,7 @@ def main_app():
                         if selected_col != "(Skip)":
                             mapping[target_col] = selected_col
                 
-                # --- CLEAR SEPARATION OF BUTTONS ---
                 st.write("---")
-                
-                # Step 1: Generate Preview
                 if st.button(f"Generate Preview ({file.name})", type="primary"):
                     if not mapping:
                         st.error("Please map at least one column.")
@@ -199,20 +224,14 @@ def main_app():
                         for target, source in mapping.items():
                             new_data[target] = df[source]
                         clean_df = pd.DataFrame(new_data)
-                        
-                        # Store in session state
                         st.session_state[f'clean_{file.name}'] = clean_df
 
-                # Step 2: Actions (Only show if preview exists)
                 if f'clean_{file.name}' in st.session_state:
                     clean_df = st.session_state[f'clean_{file.name}']
                     st.success("Preview Generated Successfully:")
                     st.dataframe(clean_df.head())
                     
-                    st.markdown("#### Choose Action:")
                     col_d, col_s = st.columns(2)
-                    
-                    # ACTION A: Download
                     output = BytesIO()
                     with pd.ExcelWriter(output) as writer:
                         clean_df.to_excel(writer, index=False)
@@ -225,15 +244,13 @@ def main_app():
                         use_container_width=True
                     )
                     
-                    # ACTION B: Save to DB
                     if col_s.button(f"☁️ Save to Google Sheet", use_container_width=True):
                         dm.save_products_dynamic(clean_df, cat_sel, st.session_state['user'])
-                        st.success(f"Saved {len(clean_df)} rows to database!")
-                        # Clear state to prevent double save
+                        st.success(f"Saved {len(clean_df)} rows!")
                         del st.session_state[f'clean_{file.name}']
                         st.rerun()
 
-    # 3. DATA UPDATE
+    # 4. DATA UPDATE
     elif menu == "Data Update":
         st.header("🔄 Update Existing Category")
         st.info("Upload a new file to identify changes, new items, and EOL items.")
@@ -255,10 +272,8 @@ def main_app():
             file_cols = ["(Skip)"] + list(df.columns)
             
             for i, target_col in enumerate(target_columns):
-                # Fuzzy Match for Updates too
                 match_found = None
-                if target_col in df.columns:
-                    match_found = target_col
+                if target_col in df.columns: match_found = target_col
                 if not match_found:
                     fuzzy_guess = find_best_match(target_col, list(df.columns))
                     if fuzzy_guess: match_found = fuzzy_guess
@@ -272,7 +287,7 @@ def main_app():
                     if selected_col != "(Skip)":
                         mapping[target_col] = selected_col
 
-            key_col = st.selectbox("Which target column is the Unique ID (e.g., Product Name)?", target_columns)
+            key_col = st.selectbox("Which target column is the Unique ID?", target_columns)
 
             if st.button("Analyze Differences & Update"):
                 new_data = {}
