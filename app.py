@@ -87,74 +87,81 @@ def main_app():
         
         tab_search, tab_browse = st.tabs(["Search (Predictive)", "Browse Full Category"])
         
-        # --- TAB 1: PREDICTIVE SEARCH ---
     # --- TAB 1: PREDICTIVE SEARCH (FIXED) ---
         with tab_search:
+            # 1. Refresh Button
             if st.button("Refresh Database"):
                 dm.get_all_products_df.clear()
                 st.success("Database refreshed!")
 
-            # 1. Get Data
+            # 2. Get Data
             df = dm.get_all_products_df()
             
             if not df.empty:
-                # --- STEP A: SMART COLUMN DETECTION ---
-                # Goal: Find the column that actually contains the Product Name.
+                # --- STEP A: ROBUST COLUMN DETECTION ---
+                # Problem: Your file has empty columns (like 'product_name') shadowing real ones.
+                # Fix: We only select columns that actually contain data.
                 
-                # 1. Filter out columns that are completely empty
-                valid_df = df.dropna(axis=1, how='all')
+                def col_has_data(dataframe, col_name):
+                    """Returns True if the column has at least one non-empty string."""
+                    if col_name not in dataframe.columns: return False
+                    # Check for non-null and non-empty strings
+                    return dataframe[col_name].astype(str).str.strip().ne('').any()
+
+                # 1. Identify all columns that actually have data
+                valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
                 
-                # 2. Find "Product Name" column (Case-insensitive check)
-                # We look for columns containing 'name', 'model', or 'sku'
+                # 2. Find the best "Name" column from the VALID columns only
                 name_col = None
                 
-                # Priority 1: Columns with "product" AND "name" (e.g. "Product Name")
-                for col in valid_df.columns:
+                # Priority 1: Valid column containing "product" and "name" (e.g., "Product Name")
+                for col in valid_data_cols:
                     if 'product' in col.lower() and 'name' in col.lower():
                         name_col = col
                         break
                 
-                # Priority 2: Columns with "model"
+                # Priority 2: Valid column containing "model"
                 if not name_col:
-                    for col in valid_df.columns:
+                    for col in valid_data_cols:
                         if 'model' in col.lower():
                             name_col = col
                             break
-                            
-                # Priority 3: Fallback to the column with the most unique values (usually the name)
-                if not name_col:
-                    # Exclude timestamp columns if possible
-                    candidates = [c for c in valid_df.columns if 'date' not in c.lower() and 'time' not in c.lower()]
-                    if candidates:
-                        name_col = max(candidates, key=lambda c: valid_df[c].nunique())
-                    else:
-                        name_col = valid_df.columns[0] # Absolute fallback
+
+                # Priority 3: Fallback to the first valid text column (if nothing else matches)
+                if not name_col and valid_data_cols:
+                    name_col = valid_data_cols[0]
+                
+                # Safety check: If still None (empty file?), use the first column header
+                if not name_col: name_col = df.columns[0]
+
 
                 # --- STEP B: CREATE CLEAN SEARCH OPTIONS ---
                 # We create a new temporary dataframe just for the search logic
-                search_df = valid_df.copy()
+                search_df = df.copy()
                 
-                # Function to format the string nicely: "Product Name | SKU | Category"
+                # Clean Label Function: "Product Name | SKU"
                 def make_label(row):
-                    # Ensure we grab the string, handling NaN/None
-                    main_name = str(row[name_col]) if pd.notnull(row[name_col]) else "Unknown"
+                    # Get the main name
+                    main_name = str(row[name_col]) if pd.notnull(row[name_col]) else ""
                     
-                    label = main_name
-                    
-                    # Try to append SKU if a different column exists
-                    # (Simple check for a column named 'sku' or 'code')
-                    sku_c = next((c for c in valid_df.columns if 'sku' in c.lower() and c != name_col), None)
+                    # Create the base label
+                    label = main_name.strip()
+                    if not label: return None # Skip empty rows entirely
+
+                    # Try to append SKU if it exists (and is different from name)
+                    sku_c = next((c for c in valid_data_cols if 'sku' in c.lower() and c != name_col), None)
                     if sku_c:
-                        val = str(row[sku_c])
+                        val = str(row[sku_c]).strip()
                         if val and val.lower() != 'nan':
-                            label += f" | SKU: {val}"
+                            label += f" | {val}"
                             
                     return label
 
+                # Apply label creation
                 search_df['Search_Label'] = search_df.apply(make_label, axis=1)
                 
-                # Get unique, sorted options for the dropdown
-                search_options = sorted(search_df['Search_Label'].unique().tolist())
+                # Drop None values (rows that had no name) and get unique sorted list
+                search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
 
                 # --- STEP C: THE WIDGET ---
                 selected_label = st.selectbox(
@@ -172,58 +179,28 @@ def main_app():
                     # Find the row(s) that match the selected label
                     results = search_df[search_df['Search_Label'] == selected_label]
                     
-                    # Remove the helper column we created
+                    # Remove the helper column
                     results = results.drop(columns=['Search_Label'])
                     
                     if not results.empty:
                         for i, row in results.iterrows():
-                            # Title for the card
+                            # Card Title
                             card_title = str(row[name_col])
                             
                             with st.expander(f"📦 {card_title}", expanded=True):
-                                # Display all columns (excluding price for privacy, handled by button)
+                                # Display content
                                 for col in results.columns:
                                     if 'price' not in col.lower() and 'cost' not in col.lower():
                                         st.write(f"**{col}:** {row[col]}")
                                 
                                 # View Price Button
-                                price_cols = [c for c in valid_df.columns if 'price' in c.lower() or 'cost' in c.lower()]
+                                price_cols = [c for c in df.columns if 'price' in c.lower() or 'cost' in c.lower()]
                                 if price_cols:
                                     if st.button("View Price", key=f"btn_{i}"):
                                         for p_col in price_cols:
                                             st.metric(p_col, row[p_col])
             else:
                 st.warning("Database is empty. Please upload a file in the Admin tab.")
-        # --- TAB 2: BROWSE ---
-        with tab_browse:
-            cats = dm.get_categories()
-            if not cats:
-                st.warning("No categories found.")
-            else:
-                cat_sel = st.selectbox("Select Category to View", cats)
-                
-                df = dm.get_all_products_df()
-                if not df.empty:
-                    cat_data = df[df['category'] == cat_sel]
-                    cat_data = clean_display_df(cat_data)
-                    
-                    if not cat_data.empty:
-                        st.write(f"**Total Items:** {len(cat_data)}")
-                        st.dataframe(cat_data)
-                        
-                        output = BytesIO()
-                        with pd.ExcelWriter(output) as writer:
-                            cat_data.to_excel(writer, index=False)
-                        
-                        st.download_button(
-                            label=f"⬇️ Download '{cat_sel}' Pricebook",
-                            data=output.getvalue(),
-                            file_name=f"{cat_sel}_Pricebook.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-                    else:
-                        st.info(f"No data found for category: {cat_sel}")
-
     # 2. UPLOAD & MAPPING
     elif menu == "Upload & Mapping":
         st.header("📂 File Upload & Schema Config")
@@ -394,5 +371,6 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
+
 
 
