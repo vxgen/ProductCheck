@@ -16,6 +16,18 @@ def find_best_match(target, options):
         return options[match_index]
     return None
 
+# --- HELPER: CLEAN DISPLAY ---
+def clean_display_df(df):
+    """
+    Hides system columns or empty duplicate columns for cleaner display.
+    """
+    # Drop columns that are completely empty
+    df = df.dropna(axis=1, how='all')
+    
+    # Optional: If you want to hide strict system IDs, you can drop them here.
+    # For now, we just rely on dropping empties.
+    return df
+
 # --- AUTH HELPERS ---
 def hash_pw(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
@@ -70,75 +82,89 @@ def main_app():
         st.rerun()
         
     # --- NAVIGATION MENU ---
-    menu = st.sidebar.radio("Navigate", ["Product Check", "Full Pricebook", "Upload & Mapping", "Data Update"])
+    menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
     
-    # 1. PRODUCT CHECK (Search)
-    if menu == "Product Check":
-        st.header("🔎 Product Check")
-        if st.button("Refresh Database"):
-            dm.get_all_products_df.clear()
-            st.success("Database refreshed!")
-
-        query = st.text_input("Search Product")
+    # 1. PRODUCT SEARCH & BROWSE (MERGED PAGE)
+    if menu == "Product Search & Browse":
+        st.header("🔎 Product Search & Browse")
         
-        if query:
-            df = dm.get_all_products_df()
-            if not df.empty:
-                mask = df.astype(str).apply(lambda x: x.str.contains(query, case=False, na=False)).any(axis=1)
-                results = df[mask]
-                
-                if not results.empty:
-                    st.write(f"Found {len(results)} items")
-                    for i, row in results.iterrows():
-                        name_display = row.get("Product Name", row.get("name", "Item"))
-                        with st.expander(f"{name_display}"):
-                            for col in results.columns:
-                                if col not in ['category', 'last_updated', 'Price', 'price']:
-                                    st.write(f"**{col}:** {row[col]}")
-                            
-                            price_key = 'Price' if 'Price' in row else 'price'
-                            if price_key in row:
-                                if st.button("View Price", key=f"p_{i}"):
-                                    st.metric("Price", row[price_key])
-                else:
-                    st.warning("No matches found.")
-            else:
-                st.warning("Database is empty.")
-
-    # 2. FULL PRICEBOOK (View by Category)
-    elif menu == "Full Pricebook":
-        st.header("📖 Full Pricebook Viewer")
-        cats = dm.get_categories()
+        # Tabs for Search vs Browse
+        tab_search, tab_browse = st.tabs(["Search by Keyword", "Browse Full Category"])
         
-        if not cats:
-            st.warning("No categories found.")
-        else:
-            cat_sel = st.selectbox("Select Category to View", cats)
+        # --- TAB 1: SEARCH ---
+        with tab_search:
+            if st.button("Refresh Database"):
+                dm.get_all_products_df.clear()
+                st.success("Database refreshed!")
+
+            query = st.text_input("Enter Product Name/Model")
             
-            # Get full data and filter
-            df = dm.get_all_products_df()
-            if not df.empty:
-                cat_data = df[df['category'] == cat_sel]
-                
-                if not cat_data.empty:
-                    st.write(f"**Total Items:** {len(cat_data)}")
-                    st.dataframe(cat_data)
+            if query:
+                df = dm.get_all_products_df()
+                if not df.empty:
+                    # Clean up view before searching/displaying
+                    df = clean_display_df(df)
                     
-                    # Download Button
-                    output = BytesIO()
-                    with pd.ExcelWriter(output) as writer:
-                        cat_data.to_excel(writer, index=False)
+                    mask = df.astype(str).apply(lambda x: x.str.contains(query, case=False, na=False)).any(axis=1)
+                    results = df[mask]
                     
-                    st.download_button(
-                        label=f"⬇️ Download '{cat_sel}' Pricebook",
-                        data=output.getvalue(),
-                        file_name=f"{cat_sel}_Pricebook.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                    if not results.empty:
+                        st.write(f"Found {len(results)} items")
+                        for i, row in results.iterrows():
+                            # Heuristic to find the best "Name" to display on the expander
+                            name_cols = [c for c in df.columns if 'name' in c.lower() or 'model' in c.lower()]
+                            name_display = row[name_cols[0]] if name_cols else "Item"
+                            
+                            with st.expander(f"{name_display}"):
+                                # Show all columns except price
+                                for col in results.columns:
+                                    if 'price' not in col.lower() and 'cost' not in col.lower():
+                                        st.write(f"**{col}:** {row[col]}")
+                                
+                                # View Price Button
+                                price_cols = [c for c in df.columns if 'price' in c.lower() or 'cost' in c.lower()]
+                                if price_cols:
+                                    if st.button("View Price", key=f"p_{i}"):
+                                        for p_col in price_cols:
+                                            st.metric(p_col, row[p_col])
+                    else:
+                        st.warning("No matches found.")
                 else:
-                    st.info(f"No data found for category: {cat_sel}")
+                    st.warning("Database is empty.")
 
-    # 3. UPLOAD & MAPPING
+        # --- TAB 2: BROWSE FULL CATEGORY ---
+        with tab_browse:
+            cats = dm.get_categories()
+            if not cats:
+                st.warning("No categories found.")
+            else:
+                cat_sel = st.selectbox("Select Category to View", cats)
+                
+                df = dm.get_all_products_df()
+                if not df.empty:
+                    cat_data = df[df['category'] == cat_sel]
+                    
+                    # Clean display (remove empty cols)
+                    cat_data = clean_display_df(cat_data)
+                    
+                    if not cat_data.empty:
+                        st.write(f"**Total Items:** {len(cat_data)}")
+                        st.dataframe(cat_data)
+                        
+                        output = BytesIO()
+                        with pd.ExcelWriter(output) as writer:
+                            cat_data.to_excel(writer, index=False)
+                        
+                        st.download_button(
+                            label=f"⬇️ Download '{cat_sel}' Pricebook",
+                            data=output.getvalue(),
+                            file_name=f"{cat_sel}_Pricebook.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                    else:
+                        st.info(f"No data found for category: {cat_sel}")
+
+    # 2. UPLOAD & MAPPING
     elif menu == "Upload & Mapping":
         st.header("📂 File Upload & Schema Config")
         
@@ -250,7 +276,7 @@ def main_app():
                         del st.session_state[f'clean_{file.name}']
                         st.rerun()
 
-    # 4. DATA UPDATE
+    # 3. DATA UPDATE
     elif menu == "Data Update":
         st.header("🔄 Update Existing Category")
         st.info("Upload a new file to identify changes, new items, and EOL items.")
@@ -284,27 +310,4 @@ def main_app():
                 with cols[i % 3]:
                     selected_col = st.selectbox(
                         f"Target: **{target_col}**", file_cols, index=default_idx, key=f"up_{target_col}")
-                    if selected_col != "(Skip)":
-                        mapping[target_col] = selected_col
-
-            key_col = st.selectbox("Which target column is the Unique ID?", target_columns)
-
-            if st.button("Analyze Differences & Update"):
-                new_data = {}
-                for target, source in mapping.items():
-                    new_data[target] = df[source]
-                clean_df = pd.DataFrame(new_data)
-                
-                if key_col not in clean_df.columns:
-                    st.error(f"You must map the Key Column: {key_col}")
-                else:
-                    res = dm.update_products_dynamic(clean_df, cat_sel, st.session_state['user'], key_col)
-                    if "error" in res:
-                        st.error(res["error"])
-                    else:
-                        st.success(f"Update Complete! New Items: {res['new']}, Marked EOL: {res['eol']}")
-
-if st.session_state['logged_in']:
-    main_app()
-else:
-    login_page()
+                    if selected_col != "(
