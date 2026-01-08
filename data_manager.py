@@ -15,11 +15,11 @@ def get_client():
 
 def get_sheet():
     client = get_client()
-    # Ensure this URL matches your actual Google Sheet URL
+    # Double check this URL is your correct sheet
     url = "https://docs.google.com/spreadsheets/d/1KG8qWTYLa6GEWByYIg2vz3bHrGdW3gvqD_detwhyj7k/edit"
     return client.open_by_url(url)
 
-# --- READ FUNCTIONS (CACHED TO PREVENT ERRORS) ---
+# --- READ FUNCTIONS (CACHED) ---
 @st.cache_data(ttl=60)
 def get_users():
     ws = get_sheet().worksheet("users")
@@ -46,13 +46,19 @@ def get_schema():
 def get_all_products_df():
     """Fetch all products once and keep in memory."""
     ws = get_sheet().worksheet("products")
-    return pd.DataFrame(ws.get_all_records())
+    df = pd.DataFrame(ws.get_all_records())
+    
+    # --- FIX DUPLICATES ---
+    # This filters out any columns that are completely empty/blank
+    if not df.empty:
+        df = df.dropna(axis=1, how='all')
+    return df
 
-# --- WRITE FUNCTIONS (NO CACHE) ---
+# --- WRITE FUNCTIONS ---
 def register_user(username, password, email):
     ws = get_sheet().worksheet("users")
     ws.append_row([username, password, email, "pending", "user"])
-    get_users.clear() # Clear cache so new user appears immediately
+    get_users.clear() 
 
 def log_action(user, action, details):
     try:
@@ -64,7 +70,7 @@ def log_action(user, action, details):
 def add_category(name, user):
     ws = get_sheet().worksheet("categories")
     ws.append_row([name, user, str(datetime.now())])
-    get_categories.clear() # Force refresh next time
+    get_categories.clear()
 
 def add_schema_column(col_name):
     ws = get_sheet().worksheet("schema")
@@ -84,9 +90,9 @@ def delete_schema_column(col_name):
         pass
 
 def sync_products_headers():
-    # Only run this when saving data, no cache needed
+    # Only force 'category' and 'last_updated'. 
+    # Do NOT force 'product_name' etc, to avoid duplicates with user schema.
     client = get_client() 
-    # Must use full URL here again to avoid cache issues inside this function
     sh = client.open_by_url("https://docs.google.com/spreadsheets/d/1KG8qWTYLa6GEWByYIg2vz3bHrGdW3gvqD_detwhyj7k/edit")
     ws_prod = sh.worksheet("products")
     ws_schema = sh.worksheet("schema")
@@ -118,8 +124,8 @@ def save_products_dynamic(df, category, user):
     
     for _, row in df.iterrows():
         db_row = [""] * len(headers)
-        db_row[header_map["category"]-1] = category
-        db_row[header_map["last_updated"]-1] = timestamp
+        if "category" in header_map: db_row[header_map["category"]-1] = category
+        if "last_updated" in header_map: db_row[header_map["last_updated"]-1] = timestamp
         
         for col_name in df.columns:
             if col_name in header_map:
@@ -129,15 +135,11 @@ def save_products_dynamic(df, category, user):
         
     ws.append_rows(rows_to_append)
     log_action(user, "Upload Products", f"Category: {category}, Items: {len(df)}")
-    
-    # IMPORTANT: Clear product cache so the search sees new items immediately
     get_all_products_df.clear()
 
 def update_products_dynamic(new_df, category, user, key_column):
     sh = get_sheet()
     ws_eol = sh.worksheet("eol_products")
-    
-    # Use cached reading for speed
     all_data = get_all_products_df()
     
     if key_column not in new_df.columns:
@@ -151,12 +153,9 @@ def update_products_dynamic(new_df, category, user, key_column):
         existing_keys = set()
     
     new_keys = set(new_df[key_column].astype(str))
-    
-    # Identify differences
     to_add_keys = new_keys - existing_keys
     eol_keys = existing_keys - new_keys
     
-    # Archive EOL
     if not current_data.empty and eol_keys:
         eol_rows = current_data[current_data[key_column].astype(str).isin(eol_keys)]
         eol_archive = []
@@ -165,12 +164,10 @@ def update_products_dynamic(new_df, category, user, key_column):
         if eol_archive:
             ws_eol.append_rows(eol_archive)
 
-    # Save New Data
     save_products_dynamic(new_df, category, user)
-    
     return {"new": len(to_add_keys), "eol": len(eol_keys), "total_uploaded": len(new_df)}
+
 def search_products(query):
-    # Backward compatibility wrapper just in case
     df = get_all_products_df()
     if df.empty: return df
     mask = df.astype(str).apply(lambda x: x.str.contains(query, case=False, na=False)).any(axis=1)
