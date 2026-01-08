@@ -80,8 +80,8 @@ def main_app():
         
     # --- NAVIGATION MENU ---
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
-   # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE (OPTIMIZED)
+ # =======================================================
+    # 1. PRODUCT SEARCH & BROWSE (HIDDEN UNTIL TYPED)
     # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
@@ -115,74 +115,70 @@ def main_app():
                 else:
                     # --- STEP A: FIND NAME COLUMN ---
                     name_col = None
-                    # Priority 1: 'product' + 'name'
                     for col in valid_data_cols:
                         if 'product' in col.lower() and 'name' in col.lower():
                             name_col = col
                             break
-                    # Priority 2: 'model'
                     if not name_col:
                         for col in valid_data_cols:
                             if 'model' in col.lower():
                                 name_col = col
                                 break
-                    # Priority 3: Fallback
                     if not name_col: name_col = valid_data_cols[0]
 
                     # --- STEP B: BUILD CLEAN SEARCH LABEL ---
                     search_df = df.copy()
 
-                    # 1. Define keywords to EXCLUDE from the search string completely.
-                    #    - We hide PRICE/COST for privacy.
-                    #    - We hide DATE/TIME for cleanliness.
-                    #    - We hide CATEGORY/CLASS to remove "Professional Monitors" noise.
+                    # Keywords to exclude from the Search String (Cleanliness & Privacy)
                     forbidden_in_search = [
-                        'price', 'cost', 'srp', 'msrp', 'rrp', 'margin',  # Privacy
-                        'date', 'time', 'last_updated', 'timestamp',      # Cleanliness
-                        'category', 'class', 'group', 'segment'           # Reduce visual noise
+                        'price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
+                        'date', 'time', 'last_updated', 'timestamp',
+                        'category', 'class', 'group', 'segment' # Removes "Professional Monitors"
                     ]
 
                     def make_search_label(row):
-                        # Start with the Name (The most important part)
                         main_name = str(row[name_col]) if pd.notnull(row[name_col]) else ""
                         label_parts = [main_name.strip()]
 
-                        # Loop through other valid columns to append unique info
                         for col in valid_data_cols:
-                            # Skip the name column (already added)
                             if col == name_col: continue
-                            
-                            # Skip Forbidden columns
                             if any(k in col.lower() for k in forbidden_in_search): continue
                             
                             val = str(row[col]).strip()
-                            # Only add if it has real data
                             if val and val.lower() not in ['nan', 'none', '']:
-                                # Clean up duplicates (if SKU is same as Name, don't repeat it)
                                 if val not in label_parts:
-                                    # Optional: Truncate very long descriptions to keep dropdown clean?
-                                    # For now, we keep it so you can search "IPS" or "100Hz"
                                     label_parts.append(val)
                         
-                        # Join them cleanly with a pipe
                         return " | ".join(filter(None, label_parts))
 
                     search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
                     
-                    # Filter out None and sort alphabetically
-                    search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
-
-                    # --- STEP C: SEARCH WIDGET ---
-                    # Uses index=None to ensure it's empty by default.
-                    selected_label = st.selectbox(
-                        label="Product Search",
-                        options=search_options,
-                        index=None,
-                        placeholder="Type to search (Name, SKU, Specs)...",
-                        help="Start typing to filter. Prices are hidden until selected.",
-                        label_visibility="collapsed" # Hides the label for a cleaner look
+                    # --- STEP C: SEARCH WIDGET (TWO-STEP) ---
+                    # 1. First, the User types text (Search Trigger)
+                    search_query = st.text_input(
+                        "Start typing to search...", 
+                        placeholder="e.g. mp275",
+                        help="Type a keyword and press Enter to see predictions."
                     )
                     
+                    selected_label = None
+
+                    # 2. Only show the dropdown IF text is typed
+                    if search_query:
+                        # Filter options based on the typed text (Case Insensitive)
+                        all_labels = search_df['Search_Label'].unique().tolist()
+                        matching_options = [opt for opt in all_labels if search_query.lower() in str(opt).lower()]
+                        
+                        if matching_options:
+                            # Show the "Predictive" dropdown with ONLY the matches
+                            selected_label = st.selectbox(
+                                f"Found {len(matching_options)} match(es):",
+                                options=sorted(matching_options),
+                                index=0 # Auto-select the first best match
+                            )
+                        else:
+                            st.warning("No matches found.")
+
                     st.divider()
 
                     # --- STEP D: SHOW RESULTS ---
@@ -194,20 +190,17 @@ def main_app():
                             for i, row in results.iterrows():
                                 card_title = str(row[name_col])
                                 with st.expander(f"📦 {card_title}", expanded=True):
-                                    # Define hidden keywords for DISPLAY (Strict Privacy)
                                     hidden_keywords = ['price', 'cost', 'srp', 'msrp', 'rrp', 'margin']
                                     
                                     all_cols = results.columns.tolist()
                                     price_cols = [c for c in all_cols if any(k in c.lower() for k in hidden_keywords)]
                                     public_cols = [c for c in all_cols if c not in price_cols and c != 'Search_Label']
                                     
-                                    # Display Public Data
                                     for col in public_cols:
                                         val = str(row[col]).strip()
                                         if val and val.lower() != 'nan':
                                             st.write(f"**{col}:** {row[col]}")
                                     
-                                    # View Price Button
                                     if price_cols:
                                         if st.button("View Price 💰", key=f"btn_{i}"):
                                             st.markdown("---")
@@ -422,4 +415,5 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
+
 
