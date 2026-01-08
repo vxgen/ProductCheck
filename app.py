@@ -9,8 +9,8 @@ st.set_page_config(page_title="Product Check App", layout="wide")
 
 # --- HELPER: FUZZY MATCHING ---
 def find_best_match(target, options):
-    options_lower = [o.lower() for o in options]
-    matches = difflib.get_close_matches(target.lower(), options_lower, n=1, cutoff=0.4)
+    options_lower = [str(o).lower() for o in options]
+    matches = difflib.get_close_matches(str(target).lower(), options_lower, n=1, cutoff=0.4)
     if matches:
         match_index = options_lower.index(matches[0])
         return options[match_index]
@@ -81,14 +81,166 @@ def main_app():
     # --- NAVIGATION MENU ---
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
     
-    # 1. PRODUCT SEARCH & BROWSE
+    # =======================================================
+    # 1. PRODUCT SEARCH & BROWSE (UPDATED LOGIC)
+    # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
         
+        # 1. Refresh Button
+        if st.button("Refresh Database"):
+            dm.get_all_products_df.clear()
+            st.rerun()
+
+        # 2. Get Data
+        df = dm.get_all_products_df()
+
+        # 3. Create Tabs
         tab_search, tab_browse = st.tabs(["Search (Predictive)", "Browse Full Category"])
-        
-   
+
+        # --- TAB 1: PREDICTIVE SEARCH ---
+        with tab_search:
+            if not df.empty:
+                # --- HELPER: ROBUST DATA CHECK ---
+                # Ensures we don't pick empty columns or columns with just "nan"
+                def col_has_data(dataframe, col_name):
+                    if col_name not in dataframe.columns: return False
+                    # Convert to string, strip whitespace
+                    s = dataframe[col_name].astype(str).str.strip()
+                    # valid if it contains anything other than '', 'nan', 'none', 'nat'
+                    is_empty = s.lower().isin(['nan', 'none', '', 'nat'])
+                    # If ALL values are empty/nan, return False. Otherwise True.
+                    return not is_empty.all()
+
+                # Identify columns that actually have text
+                valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
+                
+                if not valid_data_cols:
+                    st.error("Data loaded, but all columns appear empty. Please check your Excel file.")
+                else:
+                    # --- STEP A: FIND NAME COLUMN ---
+                    name_col = None
+                    # Priority 1: 'product' + 'name'
+                    for col in valid_data_cols:
+                        if 'product' in col.lower() and 'name' in col.lower():
+                            name_col = col
+                            break
+                    # Priority 2: 'model'
+                    if not name_col:
+                        for col in valid_data_cols:
+                            if 'model' in col.lower():
+                                name_col = col
+                                break
+                    # Priority 3: Fallback to first valid column
+                    if not name_col: name_col = valid_data_cols[0]
+
+                    # --- STEP B: BUILD SEARCH OPTIONS ---
+                    search_df = df.copy()
+
+                    def make_label(row):
+                        # Get main name
+                        main_name = str(row[name_col]) if pd.notnull(row[name_col]) else ""
+                        label = main_name.strip()
+                        # Skip if the name itself is essentially empty
+                        if not label or label.lower() == 'nan': return None 
+
+                        # Append SKU if exists
+                        sku_c = next((c for c in valid_data_cols if 'sku' in c.lower() and c != name_col), None)
+                        if sku_c:
+                            val = str(row[sku_c]).strip()
+                            if val and val.lower() != 'nan':
+                                label += f" | {val}"
+                        return label
+
+                    search_df['Search_Label'] = search_df.apply(make_label, axis=1)
+                    # Filter out None and sort
+                    search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
+
+                    # --- STEP C: SEARCH WIDGET ---
+                    selected_label = st.selectbox(
+                        label=f"Start typing to search ({name_col})...",
+                        options=search_options,
+                        index=None,
+                        placeholder="Type Product Name or SKU...",
+                        help="Predictive search filters as you type."
+                    )
+                    
+                    st.divider()
+
+                    # --- STEP D: SHOW RESULTS (Strict Privacy) ---
+                    if selected_label:
+                        results = search_df[search_df['Search_Label'] == selected_label]
+                        results = results.drop(columns=['Search_Label'])
+                        
+                        if not results.empty:
+                            for i, row in results.iterrows():
+                                card_title = str(row[name_col])
+                                with st.expander(f"📦 {card_title}", expanded=True):
+                                    # Define hidden keywords (case-insensitive partial match)
+                                    # This hides Price, Cost, SRP, MSRP, RRP, Margin, etc.
+                                    hidden_keywords = ['price', 'cost', 'srp', 'msrp', 'rrp', 'margin']
+                                    
+                                    all_cols = results.columns.tolist()
+                                    # Identify price columns
+                                    price_cols = [c for c in all_cols if any(k in c.lower() for k in hidden_keywords)]
+                                    # Identify public columns (exclude price cols and system cols like 'Search_Label')
+                                    public_cols = [c for c in all_cols if c not in price_cols and c != 'Search_Label']
+                                    
+                                    # Display Public Data
+                                    for col in public_cols:
+                                        # Only show if value is not empty
+                                        val = str(row[col]).strip()
+                                        if val and val.lower() != 'nan':
+                                            st.write(f"**{col}:** {row[col]}")
+                                    
+                                    # View Price Button
+                                    if price_cols:
+                                        if st.button("View Price 💰", key=f"btn_{i}"):
+                                            st.markdown("---")
+                                            cols = st.columns(len(price_cols))
+                                            for idx, p_col in enumerate(price_cols):
+                                                val = row[p_col]
+                                                try: val = f"{float(val):,.2f}"
+                                                except: pass
+                                                cols[idx].metric(label=p_col, value=val)
+            else:
+                st.warning("Database is empty. Please upload a file in the Admin tab.")
+
+        # --- TAB 2: BROWSE FULL CATEGORY (Restored) ---
+        with tab_browse:
+            # Re-fetch categories
+            cats = dm.get_categories()
+            if not cats:
+                st.warning("No categories found.")
+            else:
+                cat_sel = st.selectbox("Select Category to View", cats)
+                
+                if not df.empty and 'category' in df.columns:
+                    # Filter by selected category
+                    cat_data = df[df['category'] == cat_sel]
+                    
+                    if not cat_data.empty:
+                        st.write(f"**Total Items:** {len(cat_data)}")
+                        st.dataframe(cat_data, use_container_width=True)
+                        
+                        # Download Button
+                        output = BytesIO()
+                        with pd.ExcelWriter(output) as writer:
+                            cat_data.to_excel(writer, index=False)
+                        st.download_button(
+                            label=f"⬇️ Download '{cat_sel}' Pricebook",
+                            data=output.getvalue(),
+                            file_name=f"{cat_sel}_Pricebook.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                    else:
+                        st.info(f"No data found for category: {cat_sel}")
+                else:
+                    st.info("No product data available or 'category' column missing.")
+
+    # =======================================================
     # 2. UPLOAD & MAPPING
+    # =======================================================
     elif menu == "Upload & Mapping":
         st.header("📂 File Upload & Schema Config")
         
@@ -200,7 +352,9 @@ def main_app():
                         del st.session_state[f'clean_{file.name}']
                         st.rerun()
 
+    # =======================================================
     # 3. DATA UPDATE
+    # =======================================================
     elif menu == "Data Update":
         st.header("🔄 Update Existing Category")
         st.info("Upload a new file to identify changes, new items, and EOL items.")
@@ -258,7 +412,3 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
-
-
-
-
