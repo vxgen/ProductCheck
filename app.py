@@ -23,9 +23,6 @@ def clean_display_df(df):
     """
     # Drop columns that are completely empty
     df = df.dropna(axis=1, how='all')
-    
-    # Optional: If you want to hide strict system IDs, you can drop them here.
-    # For now, we just rely on dropping empties.
     return df
 
 # --- AUTH HELPERS ---
@@ -84,11 +81,10 @@ def main_app():
     # --- NAVIGATION MENU ---
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
     
-    # 1. PRODUCT SEARCH & BROWSE (MERGED PAGE)
+    # 1. PRODUCT SEARCH & BROWSE
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
         
-        # Tabs for Search vs Browse
         tab_search, tab_browse = st.tabs(["Search by Keyword", "Browse Full Category"])
         
         # --- TAB 1: SEARCH ---
@@ -102,7 +98,6 @@ def main_app():
             if query:
                 df = dm.get_all_products_df()
                 if not df.empty:
-                    # Clean up view before searching/displaying
                     df = clean_display_df(df)
                     
                     mask = df.astype(str).apply(lambda x: x.str.contains(query, case=False, na=False)).any(axis=1)
@@ -111,17 +106,15 @@ def main_app():
                     if not results.empty:
                         st.write(f"Found {len(results)} items")
                         for i, row in results.iterrows():
-                            # Heuristic to find the best "Name" to display on the expander
+                            # Heuristic for name display
                             name_cols = [c for c in df.columns if 'name' in c.lower() or 'model' in c.lower()]
                             name_display = row[name_cols[0]] if name_cols else "Item"
                             
                             with st.expander(f"{name_display}"):
-                                # Show all columns except price
                                 for col in results.columns:
                                     if 'price' not in col.lower() and 'cost' not in col.lower():
                                         st.write(f"**{col}:** {row[col]}")
                                 
-                                # View Price Button
                                 price_cols = [c for c in df.columns if 'price' in c.lower() or 'cost' in c.lower()]
                                 if price_cols:
                                     if st.button("View Price", key=f"p_{i}"):
@@ -132,7 +125,7 @@ def main_app():
                 else:
                     st.warning("Database is empty.")
 
-        # --- TAB 2: BROWSE FULL CATEGORY ---
+        # --- TAB 2: BROWSE ---
         with tab_browse:
             cats = dm.get_categories()
             if not cats:
@@ -143,8 +136,6 @@ def main_app():
                 df = dm.get_all_products_df()
                 if not df.empty:
                     cat_data = df[df['category'] == cat_sel]
-                    
-                    # Clean display (remove empty cols)
                     cat_data = clean_display_df(cat_data)
                     
                     if not cat_data.empty:
@@ -310,4 +301,27 @@ def main_app():
                 with cols[i % 3]:
                     selected_col = st.selectbox(
                         f"Target: **{target_col}**", file_cols, index=default_idx, key=f"up_{target_col}")
-                    if selected_col != "(
+                    if selected_col != "(Skip)":
+                        mapping[target_col] = selected_col
+
+            key_col = st.selectbox("Which target column is the Unique ID?", target_columns)
+
+            if st.button("Analyze Differences & Update"):
+                new_data = {}
+                for target, source in mapping.items():
+                    new_data[target] = df[source]
+                clean_df = pd.DataFrame(new_data)
+                
+                if key_col not in clean_df.columns:
+                    st.error(f"You must map the Key Column: {key_col}")
+                else:
+                    res = dm.update_products_dynamic(clean_df, cat_sel, st.session_state['user'], key_col)
+                    if "error" in res:
+                        st.error(res["error"])
+                    else:
+                        st.success(f"Update Complete! New Items: {res['new']}, Marked EOL: {res['eol']}")
+
+if st.session_state['logged_in']:
+    main_app()
+else:
+    login_page()
