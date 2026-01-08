@@ -72,9 +72,8 @@ def main_app():
         
     # --- NAVIGATION MENU ---
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
-    
-    # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE
+ # =======================================================
+    # 1. PRODUCT SEARCH & BROWSE (FINAL REFINEMENT)
     # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
@@ -84,23 +83,23 @@ def main_app():
             try:
                 dm.get_all_products_df.clear()
                 st.toast("Cache cleared. Reloading...", icon="🔄")
-                time.sleep(1) # Small pause to prevent API rate limits
+                time.sleep(1) 
                 st.rerun()
             except Exception as e:
                 st.error(f"Error refreshing: {e}")
 
-        # 2. Safe Data Loading (Fixes APIError Crash)
+        # 2. Safe Data Loading
         try:
             df = dm.get_all_products_df()
         except Exception as e:
             st.error("⚠️ Connection Busy: Google Sheets API limit reached.")
             st.caption("Please wait 10 seconds and click 'Refresh Database' again.")
-            df = pd.DataFrame() # Empty placeholder to prevent crash
+            df = pd.DataFrame()
 
         # 3. Create Tabs
         tab_search, tab_browse = st.tabs(["Search (Predictive)", "Browse Full Category"])
 
-        # --- TAB 1: PREDICTIVE SEARCH (REVERTED TO SELECTBOX) ---
+        # --- TAB 1: PREDICTIVE SEARCH ---
         with tab_search:
             if not df.empty:
                 # --- HELPER: ROBUST DATA CHECK ---
@@ -113,7 +112,7 @@ def main_app():
                 valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
                 
                 if not valid_data_cols:
-                    st.error("Data loaded, but all columns appear empty. Please check your Excel file.")
+                    st.error("Data loaded, but all columns appear empty.")
                 else:
                     # --- STEP A: FIND NAME COLUMN ---
                     name_col = None
@@ -131,11 +130,10 @@ def main_app():
                     # --- STEP B: BUILD CLEAN SEARCH LABEL ---
                     search_df = df.copy()
 
-                    # Exclude these from the visual label (Reduces noise & privacy risk)
                     forbidden_in_search = [
                         'price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
                         'date', 'time', 'last_updated', 'timestamp',
-                        'category', 'class', 'group', 'segment' # Removes "Professional Monitors" noise
+                        'category', 'class', 'group', 'segment' 
                     ]
 
                     def make_search_label(row):
@@ -154,18 +152,45 @@ def main_app():
                         return " | ".join(filter(None, label_parts))
 
                     search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
-                    search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
 
-                    # --- STEP C: SEARCH WIDGET (Single, Instant) ---
-                    # Using standard selectbox allows "Type to Filter" immediately.
-                    selected_label = st.selectbox(
-                        label="Product Search",
-                        options=search_options,
-                        index=None, # Keeps box empty until user types/clicks
-                        placeholder="Start typing to search (Name, SKU, Specs)...",
-                        label_visibility="collapsed"
-                    )
+                    # --- STEP C: SEARCH INTERFACE (2-Step) ---
                     
+                    # 1. Layout: Search Bar + Clear Button
+                    c_search, c_clear = st.columns([6, 1])
+                    
+                    with c_search:
+                        # We use text_input as the trigger. 
+                        # This satisfies "No result if no value key-in" because the dropdown below won't exist yet.
+                        search_query = st.text_input(
+                            "Type keywords to find product:", 
+                            placeholder="e.g. MP275...",
+                            key="search_input"
+                        )
+                        
+                    with c_clear:
+                        st.write("") # Spacer to align button
+                        st.write("") 
+                        if st.button("Clear"):
+                            st.rerun() # Rerunning clears the text input since we didn't bind it to a persistent session state manually
+
+                    selected_label = None
+                    
+                    # 2. Only show the Predictive Dropdown IF text is typed
+                    if search_query:
+                        # Filter options based on the typed text (Case Insensitive)
+                        all_labels = search_df['Search_Label'].unique().tolist()
+                        matching_options = [opt for opt in all_labels if search_query.lower() in str(opt).lower()]
+                        
+                        if matching_options:
+                            # Show matches in a selectbox
+                            selected_label = st.selectbox(
+                                f"⬇️ Found {len(matching_options)} match(es). Select one:",
+                                options=sorted(matching_options),
+                                index=0 
+                            )
+                        else:
+                            st.warning(f"No products found matching '{search_query}'")
+
                     st.divider()
 
                     # --- STEP D: SHOW RESULTS ---
@@ -183,14 +208,19 @@ def main_app():
                                     price_cols = [c for c in all_cols if any(k in c.lower() for k in hidden_keywords)]
                                     public_cols = [c for c in all_cols if c not in price_cols and c != 'Search_Label']
                                     
+                                    # Show Public Info
                                     for col in public_cols:
                                         val = str(row[col]).strip()
                                         if val and val.lower() != 'nan':
                                             st.write(f"**{col}:** {row[col]}")
                                     
+                                    # Toggle Price (Hide/Show)
                                     if price_cols:
-                                        if st.button("View Price 💰", key=f"btn_{i}"):
-                                            st.markdown("---")
+                                        st.markdown("---")
+                                        # Use a toggle instead of a button so you can hide it again
+                                        show_price = st.toggle("Show Price 💰", key=f"toggle_{i}")
+                                        
+                                        if show_price:
                                             cols = st.columns(len(price_cols))
                                             for idx, p_col in enumerate(price_cols):
                                                 val = row[p_col]
@@ -198,16 +228,13 @@ def main_app():
                                                 except: pass
                                                 cols[idx].metric(label=p_col, value=val)
             else:
-                if 'df' in locals() and df.empty: # Only show warning if DF loaded but empty
+                if 'df' in locals() and df.empty: 
                     st.warning("Database is empty. Please upload a file in the Admin tab.")
 
         # --- TAB 2: BROWSE FULL CATEGORY ---
         with tab_browse:
-            # Safe loading for categories too
-            try:
-                cats = dm.get_categories()
-            except:
-                cats = []
+            try: cats = dm.get_categories()
+            except: cats = []
                 
             if not cats:
                 st.warning("No categories found.")
@@ -409,3 +436,4 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
+
