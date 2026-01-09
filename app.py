@@ -11,7 +11,7 @@ from fpdf import FPDF
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
-# --- PDF GENERATOR (WITH EXPIRE DATE) ---
+# --- PDF GENERATOR (WITH GST & DISCOUNT) ---
 class QuotePDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 20)
@@ -75,7 +75,7 @@ def create_pdf(quote_row):
     pdf.set_x(right_x)
     pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, created_at, 0, 1)
     
-    # Row 3: Expires (RESTORED)
+    # Row 3: Expires
     pdf.set_x(right_x)
     pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, expire_date, 0, 1)
     
@@ -228,7 +228,7 @@ def main_app():
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Quote Generator", "Upload (Direct)", "Data Update (Direct)"])
     
     # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE (ROBUST SEARCH LOGIC)
+    # 1. PRODUCT SEARCH & BROWSE
     # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
@@ -265,8 +265,7 @@ def main_app():
                 else:
                     name_col = None
                     for col in valid_data_cols:
-                        if 'product' in col.lower() and 'name' in col.lower():
-                            name_col = col; break
+                        if 'product' in col.lower() and 'name' in col.lower(): name_col = col; break
                     if not name_col:
                         for col in valid_data_cols:
                             if 'model' in col.lower(): name_col = col; break
@@ -389,7 +388,7 @@ def main_app():
                     q_client = st.text_input("Client Name / Company", key="q_client_in", value=st.session_state.get('edit_client', ''))
                     q_email = st.text_input("Client Email", key="q_email_in", value=st.session_state.get('edit_email', ''))
                     q_date = st.date_input("Date", date.today())
-                    q_expire = st.date_input("Expiration Date", date.today()) # RESTORED
+                    q_expire = st.date_input("Expiration Date", date.today()) 
                     q_terms = st.text_area("Terms & Conditions", "Payment due within 30 days.")
 
             with c_items:
@@ -434,7 +433,8 @@ def main_app():
                             search_df['Label'] = search_df.apply(make_lbl, axis=1)
                             opts = sorted(search_df['Label'].unique().tolist())
                             
-                            sel_lbl = st.selectbox("Find Product", options=opts, index=None, placeholder="Type Name...")
+                            # KEY ADDED HERE TO CONTROL RESET
+                            sel_lbl = st.selectbox("Find Product", options=opts, index=None, placeholder="Type Name...", key="q_search_product")
                             
                             if sel_lbl:
                                 row = search_df[search_df['Label'] == sel_lbl].iloc[0]
@@ -467,10 +467,13 @@ def main_app():
                                         "total": 0 
                                     }
                                     st.session_state['quote_items'].append(item)
+                                    # AUTO CLEAR SEARCH
+                                    st.session_state["q_search_product"] = None
                                     st.rerun()
 
                 with t_manual:
-                    with st.form("manual_add"):
+                    # ENABLE CLEAR ON SUBMIT
+                    with st.form("manual_add", clear_on_submit=True):
                         mn = st.text_input("Product Name")
                         c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
                         mq = c1.number_input("Qty", 1, 1000, 1)
@@ -549,7 +552,7 @@ def main_app():
                             "client_name": q_client, 
                             "client_email": q_email, 
                             "total_amount": grand_total, 
-                            "expiration_date": str(q_expire), # SAVED
+                            "expiration_date": str(q_expire),
                             "items": items_to_save
                         }
                         dm.save_quote(payload, st.session_state['user'])
