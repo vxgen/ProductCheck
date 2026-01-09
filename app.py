@@ -7,18 +7,15 @@ import difflib
 import time
 import json
 from datetime import date
-from fpdf import FPDF # Requires: pip install fpdf
+from fpdf import FPDF
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
-# --- PDF GENERATOR (Replicating MSI Layout) ---
+# --- PDF GENERATOR (WITH GST & DISCOUNT) ---
 class QuotePDF(FPDF):
     def header(self):
-        # Logo placeholder (Text for now as we don't have the image file)
         self.set_font('Arial', 'B', 20)
         self.cell(80, 10, 'MSI', 0, 0, 'L') 
-        
-        # Title
         self.set_font('Arial', 'B', 16)
         self.cell(110, 10, 'Quote', 0, 1, 'R')
         self.ln(5)
@@ -33,159 +30,122 @@ def create_pdf(quote_row):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Data extraction
+    # Extract Data
     items = json.loads(quote_row['items_json'])
     client_name = quote_row['client_name']
     quote_id = str(quote_row['quote_id'])
     created_at = str(quote_row['created_at'])[:10]
-    total_val = float(quote_row['total_amount'])
     
-    # --- TOP INFO BLOCK ---
+    # Recalculate Logic to ensure PDF matches App
+    subtotal_ex_gst = 0
+    total_discount = 0
+    
+    for item in items:
+        # Re-verify calculations based on item data
+        qty = float(item.get('qty', 0))
+        price = float(item.get('price', 0))
+        d_val = float(item.get('discount_val', 0))
+        d_type = item.get('discount_type', '%')
+        
+        gross = qty * price
+        
+        if d_type == '%':
+            disc_amt = gross * (d_val / 100)
+        else:
+            disc_amt = d_val # Flat discount
+            
+        net_line = gross - disc_amt
+        
+        subtotal_ex_gst += net_line
+        total_discount += disc_amt
+
+    gst_amount = subtotal_ex_gst * 0.10
+    grand_total = subtotal_ex_gst + gst_amount
+    
+    # --- INFO HEADER ---
     pdf.set_font('Arial', '', 10)
-    
-    # Right side Quote Details
-    # We use Cells for alignment
-    # X position for right column
-    right_col_x = 130
-    
-    pdf.set_xy(right_col_x, 20)
-    pdf.cell(30, 6, "Quote ref:", 0, 0)
-    pdf.cell(30, 6, quote_id, 0, 1)
-    
-    pdf.set_x(right_col_x)
-    pdf.cell(30, 6, "Issue date:", 0, 0)
-    pdf.cell(30, 6, created_at, 0, 1)
-    
-    pdf.set_x(right_col_x)
-    pdf.cell(30, 6, "Currency:", 0, 0)
-    pdf.cell(30, 6, "AUD", 0, 1)
-    
+    right_x = 130
+    pdf.set_xy(right_x, 20)
+    pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, quote_id, 0, 1)
+    pdf.set_x(right_x)
+    pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, created_at, 0, 1)
+    pdf.set_x(right_x)
+    pdf.cell(30, 6, "Currency:", 0, 0); pdf.cell(30, 6, "AUD", 0, 1)
     pdf.ln(10)
     
-    # --- SELLER / BUYER COLUMNS ---
+    # --- SELLER / BUYER ---
     y_start = pdf.get_y()
-    
-    # Seller (Left)
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(90, 6, "Seller", 0, 1)
+    pdf.set_font('Arial', 'B', 11); pdf.cell(90, 6, "Seller", 0, 1)
     pdf.set_font('Arial', '', 10)
     pdf.cell(90, 5, "MSI Australia", 0, 1)
     pdf.cell(90, 5, "Suite 304, Level 3, 63-79 Parramatta Rd", 0, 1)
     pdf.cell(90, 5, "Silverwater, NSW 2128", 0, 1)
-    pdf.cell(90, 5, "Australia", 0, 1)
-    pdf.ln(2)
-    pdf.cell(90, 5, "Contact:", 0, 1)
-    pdf.cell(90, 5, "Vincent Xu (vincentxu@msi.com)", 0, 1)
     
-    # Buyer (Right) - Reset Y to top of block
     pdf.set_xy(110, y_start)
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(80, 6, "Buyer", 0, 1)
-    pdf.set_x(110)
-    pdf.set_font('Arial', '', 10)
+    pdf.set_font('Arial', 'B', 11); pdf.cell(80, 6, "Buyer", 0, 1)
+    pdf.set_x(110); pdf.set_font('Arial', '', 10)
     pdf.cell(80, 5, client_name, 0, 1)
-    pdf.set_x(110)
-    pdf.cell(80, 5, "North Sydney, NSW 2060", 0, 1) # Placeholder/From DB if avail
-    pdf.ln(2)
-    pdf.set_x(110)
-    pdf.cell(80, 5, "Contact:", 0, 1)
-    pdf.set_x(110)
-    pdf.cell(80, 5, str(quote_row.get('client_email', '')), 0, 1)
+    pdf.set_x(110); pdf.cell(80, 5, str(quote_row.get('client_email', '')), 0, 1)
     
     pdf.ln(15)
     
-    # --- SUMMARY TABLE ---
-    # Headers
-    pdf.set_font('Arial', 'B', 9)
-    pdf.cell(60, 8, "Effective Date", 'B', 0)
-    pdf.cell(60, 8, "Total Discount", 'B', 0)
-    pdf.cell(60, 8, "Total Contract Value", 'B', 1, 'R')
+    # --- LINE ITEMS ---
+    pdf.set_font('Arial', 'B', 12); pdf.cell(0, 10, "Line Items", 0, 1)
     
-    # Data
-    pdf.set_font('Arial', '', 9)
-    pdf.cell(60, 8, "On agreement", 0, 0)
-    pdf.cell(60, 8, "A$0.00", 0, 0)
-    pdf.cell(60, 8, f"A${total_val:,.2f}", 0, 1, 'R')
+    pdf.set_font('Arial', 'B', 9); pdf.set_fill_color(245, 245, 245)
+    pdf.cell(85, 8, "Item", 1, 0, 'L', True)
+    pdf.cell(15, 8, "Qty", 1, 0, 'C', True)
+    pdf.cell(25, 8, "Unit Price", 1, 0, 'R', True)
+    pdf.cell(30, 8, "Discount", 1, 0, 'R', True)
+    pdf.cell(35, 8, "Net Total", 1, 1, 'R', True)
     
-    pdf.ln(10)
-    
-    # --- LINE ITEMS TABLE ---
-    pdf.set_font('Arial', 'B', 12)
-    pdf.cell(0, 10, "Line Items", 0, 1)
-    
-    # Table Header
-    pdf.set_font('Arial', 'B', 9)
-    pdf.set_fill_color(245, 245, 245)
-    pdf.cell(90, 8, "Item", 1, 0, 'L', True)
-    pdf.cell(20, 8, "Qty", 1, 0, 'C', True)
-    pdf.cell(30, 8, "Unit Price", 1, 0, 'R', True)
-    pdf.cell(20, 8, "Disc %", 1, 0, 'R', True)
-    pdf.cell(30, 8, "Net Price", 1, 1, 'R', True)
-    
-    # Table Rows
     pdf.set_font('Arial', '', 9)
     for item in items:
         name = item.get('name', 'Item')
-        desc = item.get('desc', '')
-        qty = str(item.get('qty', 0))
+        if len(name) > 45: name = name[:42] + "..."
+        
+        qty = float(item.get('qty', 0))
         price = float(item.get('price', 0))
-        disc = float(item.get('discount', 0))
-        total = float(item.get('total', 0))
         
-        # Calculate height needed
-        # We'll just do single line for name for simplicity in this MVP
-        # Truncate name if too long to prevent break
-        if len(name) > 50: name = name[:47] + "..."
+        # Re-calc for display
+        d_val = float(item.get('discount_val', 0))
+        d_type = item.get('discount_type', '%')
+        gross = qty * price
+        if d_type == '%':
+            disc_amt = gross * (d_val / 100)
+            disc_str = f"{d_val}%"
+        else:
+            disc_amt = d_val
+            disc_str = f"${d_val}"
+            
+        net_total = gross - disc_amt
         
-        pdf.cell(90, 8, name, 1, 0, 'L')
-        pdf.cell(20, 8, qty, 1, 0, 'C')
-        pdf.cell(30, 8, f"${price:,.2f}", 1, 0, 'R')
-        pdf.cell(20, 8, f"{disc}%", 1, 0, 'R')
-        pdf.cell(30, 8, f"${total:,.2f}", 1, 1, 'R')
-        
-        # Optional: Add description row if exists
-        if desc:
-            pdf.set_font('Arial', 'I', 8)
-            pdf.cell(90, 6, f"   {desc[:80]}...", 'LBR', 0, 'L') # Basic wrap
-            pdf.cell(100, 6, "", 'BR', 1) # Fill rest
-            pdf.set_font('Arial', '', 9)
+        pdf.cell(85, 8, name, 1, 0, 'L')
+        pdf.cell(15, 8, str(int(qty)), 1, 0, 'C')
+        pdf.cell(25, 8, f"${price:,.2f}", 1, 0, 'R')
+        pdf.cell(30, 8, disc_str, 1, 0, 'R')
+        pdf.cell(35, 8, f"${net_total:,.2f}", 1, 1, 'R')
 
-    pdf.ln(10)
-    
-    # --- TERMS ---
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(0, 6, "Terms", 0, 1)
-    pdf.set_font('Arial', '', 9)
-    pdf.multi_cell(0, 5, "1. Payment due within 30 days.\n2. Goods remain property of MSI until paid in full.\n3. Standard warranty applies.")
-    
     pdf.ln(5)
     
-    # --- ACCEPTANCE ---
+    # --- SUMMARY TOTALS ---
+    pdf.set_x(120)
+    pdf.cell(35, 6, "Subtotal (Ex GST):", 0, 0, 'R')
+    pdf.cell(35, 6, f"${subtotal_ex_gst:,.2f}", 0, 1, 'R')
+    
+    pdf.set_x(120)
+    pdf.cell(35, 6, "Total Discount:", 0, 0, 'R')
+    pdf.cell(35, 6, f"-${total_discount:,.2f}", 0, 1, 'R')
+    
+    pdf.set_x(120)
+    pdf.cell(35, 6, "GST (10%):", 0, 0, 'R')
+    pdf.cell(35, 6, f"${gst_amount:,.2f}", 0, 1, 'R')
+    
+    pdf.set_x(120)
     pdf.set_font('Arial', 'B', 10)
-    pdf.cell(0, 6, "Acceptance", 0, 1)
-    pdf.set_font('Arial', '', 9)
-    pdf.multi_cell(0, 5, "By signing below, the signatories confirm their acceptance of the terms and conditions outlined in this document.")
+    pdf.cell(35, 8, "Grand Total:", 0, 0, 'R')
+    pdf.cell(35, 8, f"${grand_total:,.2f}", 0, 1, 'R')
     
-    pdf.ln(10)
-    
-    # Signatures
-    y_sig = pdf.get_y()
-    pdf.cell(80, 5, "On behalf of the buyer:", 0, 0)
-    pdf.set_xy(110, y_sig)
-    pdf.cell(80, 5, "On behalf of the seller:", 0, 1)
-    
-    pdf.ln(15)
-    
-    # Lines
-    pdf.cell(80, 0, "", 'T', 0) # Line Buyer
-    pdf.set_x(110)
-    pdf.cell(80, 0, "", 'T', 1) # Line Seller
-    
-    pdf.ln(2)
-    pdf.cell(80, 5, client_name, 0, 0)
-    pdf.set_x(110)
-    pdf.cell(80, 5, "Vincent Xu", 0, 1)
-
     return pdf.output(dest='S').encode('latin-1')
 
 # --- HELPER: FUZZY MATCHING ---
@@ -431,17 +391,30 @@ def main_app():
                 
                 with t_db:
                     if not df.empty:
-                        # Smart Search Logic
+                        # Reusing Smart Search Logic
                         valid_data_cols = [c for c in df.columns if not df[c].astype(str).str.strip().eq('').all()]
                         if valid_data_cols:
-                            name_col = valid_data_cols[0] # Simplified for brevity, smart logic exists in Search tab
+                            name_col = valid_data_cols[0]
                             for col in valid_data_cols:
                                 if 'product' in col.lower() or 'model' in col.lower():
                                     name_col = col; break
                             
                             search_df = df.copy()
                             forbidden = ['price', 'cost', 'date', 'category']
-                            search_df['Label'] = search_df.apply(lambda r: f"{r[name_col]}", axis=1)
+                            
+                            # Build Smart Label
+                            def make_lbl(row):
+                                main = str(row[name_col]) if pd.notnull(row[name_col]) else ""
+                                parts = [main.strip()]
+                                for col in valid_data_cols:
+                                    if col == name_col: continue
+                                    if any(k in col.lower() for k in forbidden): continue
+                                    val = str(row[col]).strip()
+                                    if val and val.lower() not in ['nan', 'none', '']:
+                                        if val not in parts: parts.append(val)
+                                return " | ".join(filter(None, parts))
+
+                            search_df['Label'] = search_df.apply(make_lbl, axis=1)
                             opts = sorted(search_df['Label'].unique().tolist())
                             
                             sel_lbl = st.selectbox("Find Product", options=opts, index=None, placeholder="Type Name...")
@@ -449,55 +422,133 @@ def main_app():
                             if sel_lbl:
                                 row = search_df[search_df['Label'] == sel_lbl].iloc[0]
                                 price_guess = 0.0
-                                # ... (Price detection logic same as Search tab) ...
+                                for c in df.columns:
+                                    if any(x in c.lower() for x in ['price','msrp','cost']):
+                                        try: price_guess = float(str(row[c]).replace('$','').replace(',','')); break
+                                        except: pass
                                 
-                                c1, c2, c3 = st.columns(3)
+                                c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
                                 aq = c1.number_input("Qty", 1, 1000, 1)
                                 ap = c2.number_input("Unit Price", value=price_guess)
-                                ad = c3.number_input("Discount %", 0, 100, 0)
+                                # FLEXIBLE DISCOUNT INPUTS
+                                ad_val = c3.number_input("Discount", 0.0, step=1.0)
+                                ad_type = c4.selectbox("Type", ["%", "$"])
                                 
                                 if st.button("Add to Quote", key="btn_add_db"):
-                                    item = {"name": str(row[name_col]), "desc": "", "qty": aq, "price": ap, "discount": ad, "total": (ap * aq) * (1 - ad/100)}
+                                    # Logic to save item
+                                    item = {
+                                        "name": str(row[name_col]),
+                                        "desc": "",
+                                        "qty": aq,
+                                        "price": ap,
+                                        "discount_val": ad_val,
+                                        "discount_type": ad_type,
+                                        # Placeholder total, recalculate in review
+                                        "total": 0 
+                                    }
                                     st.session_state['quote_items'].append(item)
                                     st.rerun()
 
                 with t_manual:
                     with st.form("manual_add"):
                         mn = st.text_input("Product Name")
-                        mq = st.number_input("Qty", 1, 1000, 1)
-                        mp = st.number_input("Unit Price ($)", 0.0)
+                        c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+                        mq = c1.number_input("Qty", 1, 1000, 1)
+                        mp = c2.number_input("Unit Price ($)", 0.0)
+                        md_val = c3.number_input("Discount", 0.0)
+                        md_type = c4.selectbox("Type", ["%", "$"])
+                        
                         if st.form_submit_button("Add Custom Item"):
                             if mn:
-                                item = {"name": mn, "desc": "Custom Item", "qty": mq, "price": mp, "discount": 0, "total": mp*mq}
+                                item = {
+                                    "name": mn, "desc": "Custom Item",
+                                    "qty": mq, "price": mp,
+                                    "discount_val": md_val, "discount_type": md_type,
+                                    "total": 0
+                                }
                                 st.session_state['quote_items'].append(item)
                                 st.rerun()
 
             st.divider()
             
+            # --- 3. REVIEW & TOTALS ---
+            st.subheader("3. Review")
             if st.session_state['quote_items']:
                 q_df = pd.DataFrame(st.session_state['quote_items'])
-                edited_df = st.data_editor(q_df, num_rows="dynamic", use_container_width=True, key="editor_quote")
                 
-                final_total = 0
+                # Allow editing
+                edited_df = st.data_editor(
+                    q_df, 
+                    num_rows="dynamic", 
+                    use_container_width=True, 
+                    key="editor_quote",
+                    column_config={
+                        "price": st.column_config.NumberColumn("Unit Price", format="$%.2f"),
+                        "total": st.column_config.NumberColumn("Net Total (Calculated)", disabled=True),
+                        "discount_val": st.column_config.NumberColumn("Discount"),
+                        "discount_type": st.column_config.SelectboxColumn("Type", options=["%", "$"])
+                    }
+                )
+                
+                # --- CALCULATIONS ---
+                subtotal_ex_gst = 0
+                total_discount = 0
+                
                 items_to_save = []
+                
                 for index, row in edited_df.iterrows():
-                    line_total = (row['price'] * row['qty']) * (1 - row['discount']/100)
-                    final_total += line_total
-                    r_data = row.to_dict(); r_data['total'] = line_total
+                    qty = float(row['qty'])
+                    price = float(row['price'])
+                    d_val = float(row['discount_val'])
+                    d_type = row['discount_type']
+                    
+                    gross_line = qty * price
+                    
+                    if d_type == '%':
+                        disc_amt = gross_line * (d_val / 100)
+                    else:
+                        disc_amt = d_val # Flat discount
+                        
+                    net_line = gross_line - disc_amt
+                    
+                    subtotal_ex_gst += net_line
+                    total_discount += disc_amt
+                    
+                    # Update row for saving
+                    r_data = row.to_dict()
+                    r_data['total'] = net_line
                     items_to_save.append(r_data)
 
-                st.metric("Grand Total", f"${final_total:,.2f}")
+                gst_amount = subtotal_ex_gst * 0.10
+                grand_total = subtotal_ex_gst + gst_amount
+
+                # --- DISPLAY ---
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Subtotal (Ex GST)", f"${subtotal_ex_gst:,.2f}")
+                m2.metric("Total Discount", f"${total_discount:,.2f}")
+                m3.metric("GST (10%)", f"${gst_amount:,.2f}")
+                m4.metric("Grand Total", f"${grand_total:,.2f}")
                 
                 c_save, c_clear = st.columns([1, 5])
+                
                 if c_save.button("💾 Save Quote", type="primary"):
                     if not q_client: st.error("Client Name Required")
                     else:
-                        payload = {"client_name": q_client, "client_email": q_email, "total_amount": final_total, "items": items_to_save}
+                        payload = {
+                            "client_name": q_client, 
+                            "client_email": q_email, 
+                            "total_amount": grand_total, 
+                            "items": items_to_save
+                        }
                         dm.save_quote(payload, st.session_state['user'])
-                        st.success("Saved!"); st.session_state['quote_items'] = []; time.sleep(1); st.rerun()
+                        st.success("Saved!")
+                        st.session_state['quote_items'] = []
+                        time.sleep(1); st.rerun()
                 
                 if c_clear.button("Clear All"):
                     st.session_state['quote_items'] = []; st.rerun()
+            else:
+                st.info("No items in quote yet.")
 
         # --- B. QUOTE HISTORY ---
         with tab_history:
@@ -511,21 +562,18 @@ def main_app():
                     with st.expander(f"{row['created_at']} | {row['client_name']} | ${float(row['total_amount']):,.2f}"):
                         c1, c2, c3 = st.columns(3)
                         
-                        # 1. PDF Download
                         try:
                             pdf_bytes = create_pdf(row)
                             c1.download_button("📩 Download Quote (PDF)", data=pdf_bytes, file_name=f"Quote_{row['quote_id']}.pdf", mime="application/pdf")
                         except Exception as e:
                             c1.error(f"PDF Error: {e}")
 
-                        # 2. Edit
                         if c2.button("✏️ Edit Quote", key=f"edit_{row['quote_id']}"):
                             st.session_state['quote_items'] = json.loads(row['items_json'])
                             st.session_state['edit_client'] = row['client_name']
                             st.session_state['edit_email'] = row.get('client_email', '')
                             st.toast("Loaded into Create tab!"); time.sleep(1)
                         
-                        # 3. Delete
                         if c3.button("🗑️ Delete", key=f"del_{row['quote_id']}"):
                             dm.delete_quote(row['quote_id'], st.session_state['user'])
                             st.rerun()
@@ -533,12 +581,11 @@ def main_app():
                 st.info("No quotes found.")
 
     # =======================================================
-    # 3. UPLOAD / 4. UPDATE (Kept same logic as you had)
+    # 3. UPLOAD (DIRECT - NO MAPPING)
     # =======================================================
     elif menu == "Upload (Direct)":
-        st.header("📂 File Upload"); st.write("(Upload Logic Active)")
-        # ... (Insert your Upload logic here, kept for brevity in this snippet but fully functional in main code) ...
-        # (I am respecting the request to keep previous logic, so I assume you use the tested upload block)
+        st.header("📂 File Upload (Direct)")
+        
         c_left, c_right = st.columns([1, 1])
         with c_left:
             cats = dm.get_categories()
@@ -549,18 +596,80 @@ def main_app():
             if st.button("Add Cat"):
                 if new_cat:
                     dm.add_category(new_cat, st.session_state['user'])
+                    st.success(f"Added '{new_cat}'")
                     st.rerun()
+        st.divider()
+
         files = st.file_uploader("Upload Excel/CSV", accept_multiple_files=True)
-        has_headers = st.checkbox("File has headers", value=True)
+        has_headers = st.checkbox("My file has a header row (e.g. 'SKU', 'Name')", value=True)
+        
         if files:
             for file in files:
-                if st.button(f"Save {file.name}"):
-                    # Logic to save...
-                    st.success("Saved")
+                st.markdown(f"### 📄 {file.name}")
+                try:
+                    header_arg = 0 if has_headers else None
+                    if file.name.endswith('csv'): 
+                        df = pd.read_csv(file, header=header_arg)
+                    else: 
+                        df = pd.read_excel(file, header=header_arg)
+                    
+                    df = df.dropna(how='all').dropna(axis=1, how='all')
+                    st.write("Preview (Ready to Save):", df.head(3))
+                    
+                    if st.button(f"☁️ Save '{file.name}'", key=f"save_{file.name}"):
+                        dm.save_products_dynamic(df, cat_sel, st.session_state['user'])
+                        st.success(f"Saved {len(df)} rows to '{cat_sel}'!")
+                        time.sleep(1)
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Error processing file: {e}")
 
+    # =======================================================
+    # 4. DATA UPDATE (DIRECT - NO MAPPING)
+    # =======================================================
     elif menu == "Data Update (Direct)":
-        st.header("🔄 Update"); st.write("(Update Logic Active)")
-        # ... (Insert Update logic here) ...
+        st.header("🔄 Update Existing Category")
+        st.info("Upload a new file to identify changes (New vs EOL).")
+        
+        cats = dm.get_categories()
+        cat_sel = st.selectbox("Category to Update", cats)
+        
+        up_file = st.file_uploader("Upload New Pricebook")
+        has_headers_up = st.checkbox("File has headers", value=True, key="up_headers")
+        
+        if up_file:
+            try:
+                header_arg = 0 if has_headers_up else None
+                if up_file.name.endswith('csv'): df = pd.read_csv(up_file, header=header_arg)
+                else: df = pd.read_excel(up_file, header=header_arg)
+                
+                df = df.dropna(how='all').dropna(axis=1, how='all')
+                
+                st.write("File Preview:", df.head(3))
+                
+                st.markdown("### Select Unique ID")
+                st.caption("Select the column that identifies unique products (e.g. SKU).")
+                
+                default_idx = 0
+                cols = list(df.columns)
+                for i, col in enumerate(cols):
+                    if 'sku' in str(col).lower() or 'model' in str(col).lower():
+                        default_idx = i
+                        break
+                        
+                key_col = st.selectbox("Unique ID Column:", cols, index=default_idx)
 
-if st.session_state['logged_in']: main_app()
-else: login_page()
+                if st.button("Analyze Differences & Update"):
+                    res = dm.update_products_dynamic(df, cat_sel, st.session_state['user'], key_col)
+                    if "error" in res:
+                        st.error(res["error"])
+                    else:
+                        st.success(f"Update Complete! New Items: {res['new']}, Marked EOL: {res['eol']}")
+                        
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
+
+if st.session_state['logged_in']:
+    main_app()
+else:
+    login_page()
