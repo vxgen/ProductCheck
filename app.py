@@ -13,19 +13,32 @@ st.set_page_config(page_title="Product Check App", layout="wide")
 
 # --- DATA NORMALIZER ---
 def normalize_items(items):
+    """
+    Ensures all items have the required keys to prevent KeyErrors.
+    """
     clean_items = []
     for item in items:
         new_item = item.copy()
-        if 'discount_val' not in new_item: new_item['discount_val'] = float(new_item.get('discount', 0))
-        if 'discount_type' not in new_item: new_item['discount_type'] = '%'
+        if 'discount_val' not in new_item:
+            new_item['discount_val'] = float(new_item.get('discount', 0))
+        if 'discount_type' not in new_item:
+            new_item['discount_type'] = '%'
         clean_items.append(new_item)
     return clean_items
 
 # --- CALLBACKS ---
 def add_quote_item_callback(item):
-    if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
+    if 'quote_items' not in st.session_state:
+        st.session_state['quote_items'] = []
+    
+    # Validate name before adding
+    if not item['name'] or item['name'].lower() == 'nan':
+        st.toast("Error: Product name is missing!", icon="❌")
+        return
+
     item = normalize_items([item])[0]
     st.session_state['quote_items'].append(item)
+    
     st.session_state["q_search_product"] = None
     st.toast(f"Added: {item['name']}")
 
@@ -48,16 +61,16 @@ def create_pdf(quote_row):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Extract & Normalize Data
+    # Extract & Normalize
     raw_items = json.loads(quote_row['items_json'])
     items = normalize_items(raw_items)
     
     client_name = quote_row['client_name']
-    client_phone = str(quote_row.get('client_phone', '')) # Added Phone
     quote_id = str(quote_row['quote_id'])
     created_at = str(quote_row['created_at'])[:10]
     expire_date = str(quote_row.get('expiration_date', ''))
     
+    # Recalculate Logic
     subtotal_ex_gst = 0
     total_discount = 0
     
@@ -81,19 +94,14 @@ def create_pdf(quote_row):
     # --- INFO HEADER ---
     pdf.set_font('Arial', '', 10)
     right_x = 130
-    
     pdf.set_xy(right_x, 20)
     pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, quote_id, 0, 1)
-    
     pdf.set_x(right_x)
     pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, created_at, 0, 1)
-    
     pdf.set_x(right_x)
-    pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, expire_date, 0, 1) # RESTORED
-    
+    pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, expire_date, 0, 1)
     pdf.set_x(right_x)
     pdf.cell(30, 6, "Currency:", 0, 0); pdf.cell(30, 6, "AUD", 0, 1)
-    
     pdf.ln(10)
     
     # --- SELLER / BUYER ---
@@ -109,13 +117,11 @@ def create_pdf(quote_row):
     pdf.set_x(110); pdf.set_font('Arial', '', 10)
     pdf.cell(80, 5, client_name, 0, 1)
     pdf.set_x(110); pdf.cell(80, 5, str(quote_row.get('client_email', '')), 0, 1)
-    if client_phone:
-        pdf.set_x(110); pdf.cell(80, 5, client_phone, 0, 1)
-    
     pdf.ln(15)
     
     # --- LINE ITEMS ---
     pdf.set_font('Arial', 'B', 12); pdf.cell(0, 10, "Line Items", 0, 1)
+    
     pdf.set_font('Arial', 'B', 9); pdf.set_fill_color(245, 245, 245)
     pdf.cell(85, 8, "Item", 1, 0, 'L', True)
     pdf.cell(15, 8, "Qty", 1, 0, 'C', True)
@@ -163,8 +169,7 @@ def create_pdf(quote_row):
     return pdf.output(dest='S').encode('latin-1')
 
 # --- AUTH HELPERS ---
-def hash_pw(password):
-    return hashlib.sha256(str.encode(password)).hexdigest()
+def hash_pw(password): return hashlib.sha256(str.encode(password)).hexdigest()
 
 def check_login(username, password):
     try: users = dm.get_users()
@@ -179,11 +184,6 @@ if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
 
-# Initialize Input States if not present
-if 'q_client_in' not in st.session_state: st.session_state['q_client_in'] = ""
-if 'q_email_in' not in st.session_state: st.session_state['q_email_in'] = ""
-if 'q_phone_in' not in st.session_state: st.session_state['q_phone_in'] = ""
-
 def login_page():
     st.title("🔐 Login")
     u = st.text_input("Username")
@@ -193,26 +193,28 @@ def login_page():
         if success:
             st.session_state['logged_in'] = True
             st.session_state['user'] = u
-            dm.log_action(u, "Login", "Success")
-            st.rerun()
+            dm.log_action(u, "Login", "Success"); st.rerun()
         else: st.error(msg)
 
 def main_app():
     st.sidebar.title(f"User: {st.session_state['user']}")
-    if st.sidebar.button("Logout"):
-        st.session_state['logged_in'] = False; st.rerun()
+    if st.sidebar.button("Logout"): st.session_state['logged_in'] = False; st.rerun()
         
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Quote Generator", "Upload (Direct)", "Data Update (Direct)"])
     
+    # =======================================================
+    # 1. PRODUCT SEARCH & BROWSE
+    # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
         if st.button("Refresh Database"):
-            dm.get_all_products_df.clear(); st.rerun()
+            dm.get_all_products_df.clear(); st.toast("Cache cleared", icon="🔄"); time.sleep(1); st.rerun()
         
         try: df = dm.get_all_products_df()
         except: df = pd.DataFrame()
         
         tab_search, tab_browse = st.tabs(["Search (Predictive)", "Browse Full Category"])
+        
         with tab_search:
             if not df.empty:
                 def col_has_data(dataframe, col_name):
@@ -288,6 +290,9 @@ def main_app():
                     else: st.info("No data.")
             else: st.warning("No categories.")
 
+    # =======================================================
+    # 2. QUOTE GENERATOR (FIXED SEARCH)
+    # =======================================================
     elif menu == "Quote Generator":
         st.header("📝 Quotes")
         tab_create, tab_history = st.tabs(["Create New Quote", "Quote History & Downloads"])
@@ -300,10 +305,8 @@ def main_app():
             with c_details:
                 st.subheader("1. Client Details")
                 with st.container(border=True):
-                    # Using Session State keys for persistence
-                    st.text_input("Client Name / Company", key="q_client_in")
-                    st.text_input("Client Email", key="q_email_in")
-                    st.text_input("Client Phone", key="q_phone_in") # Added Phone
+                    q_client = st.text_input("Client Name / Company", key="q_client", value=st.session_state.get('edit_client', ''))
+                    q_email = st.text_input("Client Email", key="q_email", value=st.session_state.get('edit_email', ''))
                     q_date = st.date_input("Date", date.today())
                     q_expire = st.date_input("Expiration Date", date.today())
                     q_terms = st.text_area("Terms & Conditions", "Payment due within 30 days.")
@@ -314,21 +317,33 @@ def main_app():
                 
                 with t_db:
                     if not df.empty:
+                        # --- STRICT DATA FILTERING (Same as Search Tab) ---
                         def col_has_data(dataframe, col_name):
                             if col_name not in dataframe.columns: return False
                             s = dataframe[col_name].astype(str).str.strip()
-                            is_empty = s.str.lower().isin(['nan', 'none', '', 'nat'])
+                            # Filter out 'nan' strings effectively
+                            is_empty = s.str.lower().isin(['nan', 'none', '', 'nat', 'null'])
                             return not is_empty.all()
+
                         valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
+                        
                         if valid_data_cols:
-                            name_col = valid_data_cols[0]
+                            name_col = None
                             for col in valid_data_cols:
                                 if 'product' in col.lower() and 'name' in col.lower(): name_col = col; break
-                            
+                            if not name_col:
+                                for col in valid_data_cols:
+                                    if 'model' in col.lower(): name_col = col; break
+                            if not name_col: name_col = valid_data_cols[0]
+
                             search_df = df.copy()
                             forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp']
+                            
                             def make_lbl(row):
+                                # CRITICAL FIX: Handle NaN in Name Column
                                 main = str(row[name_col]) if pd.notnull(row[name_col]) else ""
+                                if main.lower() in ['nan', 'none', '']: return None # Skip invalid rows
+                                
                                 parts = [main.strip()]
                                 for col in valid_data_cols:
                                     if col == name_col: continue
@@ -339,7 +354,8 @@ def main_app():
                                 return " | ".join(filter(None, parts))
 
                             search_df['Label'] = search_df.apply(make_lbl, axis=1)
-                            opts = sorted(search_df['Label'].unique().tolist())
+                            # Remove None/Empty entries to clear "nan" and garbage from list
+                            opts = sorted([x for x in search_df['Label'].unique().tolist() if x])
                             
                             sel_lbl = st.selectbox("Find Product", options=opts, index=None, placeholder="Type Name...", key="q_search_product")
                             
@@ -429,16 +445,9 @@ def main_app():
                 
                 c_sv, c_cl = st.columns([1, 5])
                 if c_sv.button("💾 Save Quote", type="primary"):
-                    if not st.session_state['q_client_in']: st.error("Client Name Required")
+                    if not q_client: st.error("Client Name Required")
                     else:
-                        payload = {
-                            "client_name": st.session_state['q_client_in'], 
-                            "client_email": st.session_state['q_email_in'], 
-                            "client_phone": st.session_state['q_phone_in'],
-                            "total_amount": grand, 
-                            "expiration_date": str(q_expire), 
-                            "items": items_save
-                        }
+                        payload = {"client_name": q_client, "client_email": q_email, "total_amount": grand, "expiration_date": str(q_expire), "items": items_save}
                         dm.save_quote(payload, st.session_state['user'])
                         st.success("Saved!"); st.session_state['quote_items'] = []; time.sleep(1); st.rerun()
                 if c_cl.button("Clear All"): st.session_state['quote_items'] = []; st.rerun()
@@ -460,11 +469,8 @@ def main_app():
                         if c2.button("✏️ Edit Quote", key=f"e_{row['quote_id']}"):
                             loaded_items = json.loads(row['items_json'])
                             st.session_state['quote_items'] = normalize_items(loaded_items)
-                            
-                            # Inject persistent values
-                            st.session_state['q_client_in'] = row['client_name']
-                            st.session_state['q_email_in'] = row.get('client_email', '')
-                            st.session_state['q_phone_in'] = row.get('client_phone', '')
+                            st.session_state['edit_client'] = row['client_name']
+                            st.session_state['edit_email'] = row.get('client_email', '')
                             st.toast("Loaded!"); time.sleep(1)
                         if c3.button("🗑️ Delete", key=f"d_{row['quote_id']}"):
                             dm.delete_quote(row['quote_id'], st.session_state['user']); st.rerun()
