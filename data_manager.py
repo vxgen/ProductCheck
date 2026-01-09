@@ -126,7 +126,6 @@ def save_products_dynamic(df, category, user):
     add_category(category, user)
     ws = ensure_category_sheet_exists(category)
     
-    # Check if sheet has real data
     existing_data = ws.get_all_values()
     is_effectively_empty = False
     if not existing_data:
@@ -149,7 +148,6 @@ def save_products_dynamic(df, category, user):
 
 def update_products_dynamic(new_df, category, user, key_column):
     ws = ensure_category_sheet_exists(category)
-    
     try:
         data = ws.get_all_values()
         if data and len(data) > 1:
@@ -165,10 +163,8 @@ def update_products_dynamic(new_df, category, user, key_column):
     if not current_df.empty and key_column in current_df.columns and key_column in new_df.columns:
         current_keys = set(current_df[key_column].astype(str))
         new_keys = set(new_df[key_column].astype(str))
-        
         eol_keys = current_keys - new_keys
         to_add_keys = new_keys - current_keys
-        
         eol_count = len(eol_keys)
         new_count = len(to_add_keys)
         
@@ -202,20 +198,14 @@ def save_quote(quote_data, user):
     try:
         ws = sh.worksheet("quotes")
     except:
-        ws = sh.add_worksheet(title="quotes", rows=1000, cols=12)
-        # Headers include expiration_date now
+        ws = sh.add_worksheet(title="quotes", rows=1000, cols=13)
         ws.append_row([
             "quote_id", "created_at", "created_by", 
-            "client_name", "client_email", "status", 
+            "client_name", "client_email", "client_phone", "status", 
             "total_amount", "items_json", "expiration_date"
         ])
     
     quote_id = f"Q-{int(time.time())}"
-    
-    # Ensure header consistency by appending expiration at the end or handling explicitly
-    # To keep simple for gspread, we follow the column order. 
-    # NOTE: If you have existing rows, this might shift columns if not careful.
-    # It is safest to assume the user might clear the sheet or we append to the end.
     
     row = [
         quote_id,
@@ -223,6 +213,7 @@ def save_quote(quote_data, user):
         user,
         quote_data.get("client_name", ""),
         quote_data.get("client_email", ""),
+        quote_data.get("client_phone", ""), # Added Phone
         "Draft",
         quote_data.get("total_amount", 0),
         json.dumps(quote_data.get("items", [])),
@@ -235,19 +226,15 @@ def save_quote(quote_data, user):
     return quote_id
 
 def delete_quote(quote_id, user):
-    """Deletes a quote row based on ID"""
     try:
         ws = get_sheet().worksheet("quotes")
         data = ws.get_all_values()
-        
         if not data: return False
-        headers = data[0]
-        try: 
-            idx = headers.index("quote_id")
-        except: 
-            return False
         
-        # Find row index to delete (1-based for gspread)
+        headers = data[0]
+        try: idx = headers.index("quote_id")
+        except: return False
+        
         for i, row in enumerate(data):
             if i == 0: continue
             if len(row) > idx and row[idx] == str(quote_id):
