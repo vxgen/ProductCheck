@@ -49,7 +49,6 @@ def get_all_products_df():
     for cat in cats:
         try:
             ws = sh.worksheet(cat)
-            # Use get_all_values for robust reading (handles missing headers gracefully)
             data = ws.get_all_values()
             
             if data and len(data) > 1:
@@ -203,14 +202,20 @@ def save_quote(quote_data, user):
     try:
         ws = sh.worksheet("quotes")
     except:
-        ws = sh.add_worksheet(title="quotes", rows=1000, cols=10)
+        ws = sh.add_worksheet(title="quotes", rows=1000, cols=12)
+        # Headers include expiration_date now
         ws.append_row([
             "quote_id", "created_at", "created_by", 
             "client_name", "client_email", "status", 
-            "total_amount", "items_json"
+            "total_amount", "items_json", "expiration_date"
         ])
     
     quote_id = f"Q-{int(time.time())}"
+    
+    # Ensure header consistency by appending expiration at the end or handling explicitly
+    # To keep simple for gspread, we follow the column order. 
+    # NOTE: If you have existing rows, this might shift columns if not careful.
+    # It is safest to assume the user might clear the sheet or we append to the end.
     
     row = [
         quote_id,
@@ -220,7 +225,8 @@ def save_quote(quote_data, user):
         quote_data.get("client_email", ""),
         "Draft",
         quote_data.get("total_amount", 0),
-        json.dumps(quote_data.get("items", []))
+        json.dumps(quote_data.get("items", [])),
+        quote_data.get("expiration_date", "")
     ]
     
     ws.append_row(row)
