@@ -16,7 +16,6 @@ def get_client():
 
 def get_sheet():
     client = get_client()
-    # REPLACE WITH YOUR ACTUAL SHEET URL
     url = "https://docs.google.com/spreadsheets/d/1KG8qWTYLa6GEWByYIg2vz3bHrGdW3gvqD_detwhyj7k/edit"
     return client.open_by_url(url)
 
@@ -80,17 +79,6 @@ def get_quotes():
 
 # --- WRITE FUNCTIONS ---
 
-def register_user(username, password, email):
-    try:
-        ws = get_sheet().worksheet("users")
-    except:
-        sh = get_sheet()
-        ws = sh.add_worksheet(title="users", rows=100, cols=5)
-        ws.append_row(["username", "password", "email", "status", "role"])
-        
-    ws.append_row([username, password, email, "pending", "user"])
-    get_users.clear()
-
 def log_action(user, action, details):
     try:
         ws = get_sheet().worksheet("logs")
@@ -127,14 +115,12 @@ def save_products_dynamic(df, category, user):
     ws = ensure_category_sheet_exists(category)
     
     existing_data = ws.get_all_values()
-    
     is_effectively_empty = False
     if not existing_data:
         is_effectively_empty = True
     else:
-        flat_data = [item for sublist in existing_data for item in sublist if item.strip()]
-        if not flat_data:
-            is_effectively_empty = True
+        flat = [x for sub in existing_data for x in sub if x.strip()]
+        if not flat: is_effectively_empty = True
 
     clean_df = df.astype(str)
     
@@ -150,7 +136,6 @@ def save_products_dynamic(df, category, user):
 
 def update_products_dynamic(new_df, category, user, key_column):
     ws = ensure_category_sheet_exists(category)
-    
     try:
         data = ws.get_all_values()
         if data and len(data) > 1:
@@ -166,10 +151,8 @@ def update_products_dynamic(new_df, category, user, key_column):
     if not current_df.empty and key_column in current_df.columns and key_column in new_df.columns:
         current_keys = set(current_df[key_column].astype(str))
         new_keys = set(new_df[key_column].astype(str))
-        
         eol_keys = current_keys - new_keys
         to_add_keys = new_keys - current_keys
-        
         eol_count = len(eol_keys)
         new_count = len(to_add_keys)
         
@@ -177,28 +160,21 @@ def update_products_dynamic(new_df, category, user, key_column):
             eol_rows = current_df[current_df[key_column].astype(str).isin(eol_keys)]
             eol_rows['eol_date'] = str(datetime.now())
             eol_rows['original_category'] = category
-            
             try:
                 sh = get_sheet()
-                try:
-                    ws_eol = sh.worksheet("eol_products")
-                except:
+                try: ws_eol = sh.worksheet("eol_products")
+                except: 
                     ws_eol = sh.add_worksheet(title="eol_products", rows=1000, cols=20)
                     ws_eol.append_row(eol_rows.columns.tolist())
-                
                 ws_eol.append_rows(eol_rows.astype(str).values.tolist())
-            except:
-                pass
+            except: pass
 
     ws.clear()
-    
     clean_df = new_df.astype(str)
     data_to_write = [clean_df.columns.tolist()] + clean_df.values.tolist()
     ws.update(values=data_to_write, range_name='A1')
-    
     log_action(user, "Update Data", f"Category: {category}")
     get_all_products_df.clear()
-    
     return {"new": new_count, "eol": eol_count, "total": len(new_df)}
 
 # --- QUOTE FUNCTIONS ---
@@ -215,9 +191,6 @@ def save_quote(quote_data, user):
             "total_amount", "items_json"
         ])
     
-    # If ID exists (edit mode), reuse it? 
-    # For now, simplistic approach: always create new version or user deletes old one.
-    # To keep simple, we generate new ID.
     quote_id = f"Q-{int(time.time())}"
     
     row = [
@@ -227,7 +200,7 @@ def save_quote(quote_data, user):
         quote_data.get("client_name", ""),
         quote_data.get("client_email", ""),
         "Draft",
-        quote_data.get("total_amount", 0),
+        quote_data.get("total_amount", 0), # This will be the Grand Total (Inc GST)
         json.dumps(quote_data.get("items", []))
     ]
     
@@ -237,19 +210,15 @@ def save_quote(quote_data, user):
     return quote_id
 
 def delete_quote(quote_id, user):
-    """Deletes a quote row based on ID"""
     try:
         ws = get_sheet().worksheet("quotes")
         data = ws.get_all_values()
-        
         if not data: return False
-        headers = data[0]
-        try: 
-            idx = headers.index("quote_id")
-        except: 
-            return False
         
-        # Find row index to delete (1-based for gspread)
+        headers = data[0]
+        try: idx = headers.index("quote_id")
+        except: return False
+        
         for i, row in enumerate(data):
             if i == 0: continue
             if len(row) > idx and row[idx] == str(quote_id):
@@ -260,3 +229,13 @@ def delete_quote(quote_id, user):
     except:
         return False
     return False
+
+def register_user(username, password, email):
+    try:
+        ws = get_sheet().worksheet("users")
+    except:
+        sh = get_sheet()
+        ws = sh.add_worksheet(title="users", rows=100, cols=5)
+        ws.append_row(["username", "password", "email", "status", "role"])
+    ws.append_row([username, password, email, "pending", "user"])
+    get_users.clear()
