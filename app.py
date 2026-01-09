@@ -11,17 +11,37 @@ from fpdf import FPDF
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
-# --- CALLBACKS (Moved here to fix API Error) ---
+# --- DATA NORMALIZER (FIXES CRASH ON OLD DATA) ---
+def normalize_items(items):
+    """
+    Ensures all items have the required keys (discount_val, discount_type)
+    to prevent KeyErrors when loading old quotes.
+    """
+    clean_items = []
+    for item in items:
+        # Create a copy to avoid mutation issues
+        new_item = item.copy()
+        
+        # Backfill missing keys for old data
+        if 'discount_val' not in new_item:
+            # Old 'discount' field might exist
+            new_item['discount_val'] = float(new_item.get('discount', 0))
+        
+        if 'discount_type' not in new_item:
+            new_item['discount_type'] = '%'
+            
+        clean_items.append(new_item)
+    return clean_items
+
+# --- CALLBACKS ---
 def add_quote_item_callback(item):
-    """
-    Safely adds item to session state and resets the search box.
-    Runs BEFORE the app reloads, preventing the StreamlitAPIException.
-    """
     if 'quote_items' not in st.session_state:
         st.session_state['quote_items'] = []
+    
+    # Normalize before adding just in case
+    item = normalize_items([item])[0]
     st.session_state['quote_items'].append(item)
     
-    # Safely reset the search box
     st.session_state["q_search_product"] = None
     st.toast(f"Added: {item['name']}")
 
@@ -44,8 +64,10 @@ def create_pdf(quote_row):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Extract Data
-    items = json.loads(quote_row['items_json'])
+    # Extract & Normalize Data
+    raw_items = json.loads(quote_row['items_json'])
+    items = normalize_items(raw_items) # FIX: Normalize here too
+    
     client_name = quote_row['client_name']
     quote_id = str(quote_row['quote_id'])
     created_at = str(quote_row['created_at'])[:10]
@@ -62,6 +84,7 @@ def create_pdf(quote_row):
         d_type = item.get('discount_type', '%')
         
         gross = qty * price
+        
         if d_type == '%':
             disc_amt = gross * (d_val / 100)
         else:
@@ -241,7 +264,6 @@ def main_app():
                         res = search_df[search_df['Search_Label'] == sel].drop(columns=['Search_Label'])
                         for i, row in res.iterrows():
                             with st.expander(f"📦 {row[name_col]}", expanded=True):
-                                # Display logic
                                 hidden = ['price', 'cost', 'srp', 'msrp', 'rrp', 'margin']
                                 all_c = res.columns.tolist()
                                 price_c = [c for c in all_c if any(k in c.lower() for k in hidden)]
@@ -321,7 +343,6 @@ def main_app():
                             search_df['Label'] = search_df.apply(make_lbl, axis=1)
                             opts = sorted(search_df['Label'].unique().tolist())
                             
-                            # SELECTBOX
                             sel_lbl = st.selectbox("Find Product", options=opts, index=None, placeholder="Type Name...", key="q_search_product")
                             
                             if sel_lbl:
@@ -337,22 +358,18 @@ def main_app():
                                     except: continue
                                 
                                 c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
-                                # IMPORTANT: Added dynamic keys (f"{sel_lbl}") to force refresh of inputs when product changes
                                 aq = c1.number_input("Qty", 1, 1000, 1, key=f"q_{sel_lbl}")
                                 ap = c2.number_input("Unit Price", value=price_guess, key=f"p_{sel_lbl}")
                                 ad_val = c3.number_input("Discount", 0.0, step=1.0, key=f"d_{sel_lbl}")
                                 ad_type = c4.selectbox("Type", ["%", "$"], key=f"t_{sel_lbl}")
                                 
-                                # PREPARE ITEM DICT
                                 item_to_add = {
-                                    "name": str(row[name_col]),
-                                    "desc": "",
+                                    "name": str(row[name_col]), "desc": "",
                                     "qty": aq, "price": ap,
                                     "discount_val": ad_val, "discount_type": ad_type,
                                     "total": 0
                                 }
                                 
-                                # USE CALLBACK FOR ADD BUTTON
                                 st.button("Add to Quote", key="btn_add_db", on_click=add_quote_item_callback, args=(item_to_add,))
 
                 with t_manual:
@@ -372,12 +389,16 @@ def main_app():
                                     "discount_val": md_val, "discount_type": md_type,
                                     "total": 0
                                 }
-                                add_quote_item_callback(item) # Direct call inside form submit
+                                add_quote_item_callback(item) 
                                 st.rerun()
 
             st.divider()
             
+            # ENSURE ITEMS ARE NORMALIZED BEFORE USE
             if st.session_state['quote_items']:
+                # Clean Data first
+                st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
+                
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
                 edited_df = st.data_editor(
@@ -393,7 +414,10 @@ def main_app():
                 
                 sub_ex = 0; tot_disc = 0; items_save = []
                 for index, row in edited_df.iterrows():
-                    q = float(row['qty']); p = float(row['price']); d = float(row['discount_val']); t = row['discount_type']
+                    # SAFER ACCESS
+                    q = float(row.get('qty', 0)); p = float(row.get('price', 0))
+                    d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
+                    
                     gross = q * p
                     disc = gross * (d/100) if t == '%' else d
                     net = gross - disc
@@ -434,7 +458,9 @@ def main_app():
                         except Exception as e: c1.error(f"PDF Error: {e}")
                         
                         if c2.button("✏️ Edit Quote", key=f"e_{row['quote_id']}"):
-                            st.session_state['quote_items'] = json.loads(row['items_json'])
+                            # Normalize loaded items immediately
+                            loaded_items = json.loads(row['items_json'])
+                            st.session_state['quote_items'] = normalize_items(loaded_items)
                             st.session_state['edit_client'] = row['client_name']
                             st.session_state['edit_email'] = row.get('client_email', '')
                             st.toast("Loaded!"); time.sleep(1)
