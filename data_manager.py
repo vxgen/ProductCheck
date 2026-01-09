@@ -4,7 +4,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 from datetime import datetime
 import time
-import json # Added for handling quote line items
+import json 
 
 # --- CONNECT (CACHED) ---
 @st.cache_resource
@@ -42,10 +42,6 @@ def get_categories():
         return []
 
 @st.cache_data(ttl=60)
-def get_schema():
-    return ["Product Name", "SKU", "Price", "Stock"] 
-
-@st.cache_data(ttl=60)
 def get_all_products_df():
     sh = get_sheet()
     cats = get_categories()
@@ -57,11 +53,9 @@ def get_all_products_df():
             ws = sh.worksheet(cat)
             data = ws.get_all_values()
             
-            # Need at least header + 1 row of data
             if data and len(data) > 1:
                 headers = data[0]
                 rows = data[1:]
-                
                 cat_df = pd.DataFrame(rows, columns=headers)
                 cat_df['category'] = cat 
                 all_dfs.append(cat_df)
@@ -73,8 +67,18 @@ def get_all_products_df():
 
     final_df = pd.concat(all_dfs, ignore_index=True)
     final_df = final_df.dropna(axis=1, how='all')
-    
     return final_df
+
+@st.cache_data(ttl=10)
+def get_quotes():
+    """Fetches all quotes from the 'quotes' sheet."""
+    try:
+        ws = get_sheet().worksheet("quotes")
+        records = ws.get_all_records()
+        if not records: return pd.DataFrame()
+        return pd.DataFrame(records)
+    except:
+        return pd.DataFrame()
 
 # --- WRITE FUNCTIONS ---
 
@@ -199,26 +203,18 @@ def update_products_dynamic(new_df, category, user, key_column):
     
     return {"new": new_count, "eol": eol_count, "total": len(new_df)}
 
-# --- NEW: QUOTE FUNCTIONS ---
-
 def save_quote(quote_data, user):
-    """
-    Saves a quote to the 'quotes' sheet.
-    quote_data: dict containing client_name, items (json), total, etc.
-    """
     sh = get_sheet()
     try:
         ws = sh.worksheet("quotes")
     except:
         ws = sh.add_worksheet(title="quotes", rows=1000, cols=10)
-        # Create Headers
         ws.append_row([
             "quote_id", "created_at", "created_by", 
             "client_name", "client_email", "status", 
             "total_amount", "items_json"
         ])
     
-    # Generate a simple ID based on timestamp
     quote_id = f"Q-{int(time.time())}"
     
     row = [
@@ -227,11 +223,12 @@ def save_quote(quote_data, user):
         user,
         quote_data.get("client_name", ""),
         quote_data.get("client_email", ""),
-        "Draft", # Default status
+        "Draft",
         quote_data.get("total_amount", 0),
-        json.dumps(quote_data.get("items", [])) # Store items as JSON string
+        json.dumps(quote_data.get("items", []))
     ]
     
     ws.append_row(row)
-    log_action(user, "Created Quote", f"ID: {quote_id}, Client: {quote_data.get('client_name')}")
+    log_action(user, "Created Quote", f"ID: {quote_id}")
+    get_quotes.clear() # Clear cache so it shows up in history immediately
     return quote_id
