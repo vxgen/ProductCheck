@@ -13,36 +13,94 @@ st.set_page_config(page_title="Product Check App", layout="wide")
 
 # --- DATA NORMALIZER ---
 def normalize_items(items):
-    """
-    Ensures all items have the required keys to prevent KeyErrors.
-    """
+    """Ensures all items have the required keys."""
     clean_items = []
     for item in items:
         new_item = item.copy()
-        if 'discount_val' not in new_item:
-            new_item['discount_val'] = float(new_item.get('discount', 0))
-        if 'discount_type' not in new_item:
-            new_item['discount_type'] = '%'
-        if 'desc' not in new_item:
-            new_item['desc'] = ""
+        # Ensure numeric types
+        try: new_item['qty'] = float(new_item.get('qty', 1))
+        except: new_item['qty'] = 1.0
+        
+        try: new_item['price'] = float(new_item.get('price', 0))
+        except: new_item['price'] = 0.0
+        
+        try: new_item['discount_val'] = float(new_item.get('discount_val', 0))
+        except: new_item['discount_val'] = 0.0
+        
+        if 'discount_type' not in new_item: new_item['discount_type'] = '%'
+        if 'desc' not in new_item: new_item['desc'] = ""
+        
         clean_items.append(new_item)
     return clean_items
 
-# --- CALLBACKS ---
-def add_quote_item_callback(item):
-    if 'quote_items' not in st.session_state:
-        st.session_state['quote_items'] = []
+# --- CALLBACKS FOR AUTO-FILL ---
+def on_product_select():
+    """Called when the search selectbox changes."""
+    selected_label = st.session_state.get("q_search_product")
     
-    # Validate name before adding
-    if not item['name'] or str(item['name']).lower() in ['nan', 'none', '']:
-        st.toast("Error: Product name is missing!", icon="❌")
-        return
+    # If a product is selected, find it in the DB and fill inputs
+    if selected_label:
+        try:
+            df = dm.get_all_products_df()
+            # Reconstruct the label logic to match
+            # (Simplified matching: find row where generated label matches)
+            # To be efficient, we'll iterate or use the same logic if cached
+            # For simplicity here, we assume the label contains the name and filter
+            # A robust way is to re-run the label logic:
+            
+            # 1. Identify columns again (same as in main block)
+            def col_has_data(d, c):
+                return not d[c].astype(str).str.strip().eq('').all()
+            valid_cols = [c for c in df.columns if col_has_data(df, c)]
+            name_col = valid_cols[0]
+            for c in valid_cols:
+                if 'product' in c.lower() or 'model' in c.lower(): name_col = c; break
+            
+            # Helper to generate label
+            forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp']
+            def make_lbl(row):
+                main = str(row[name_col]) if pd.notnull(row[name_col]) else ""
+                parts = [main.strip()]
+                for col in valid_cols:
+                    if col == name_col: continue
+                    if any(k in col.lower() for k in forbidden): continue
+                    val = str(row[col]).strip()
+                    if val and val.lower() not in ['nan', 'none', '']:
+                        if val not in parts: parts.append(val)
+                return " | ".join(filter(None, parts))
+            
+            df['Label'] = df.apply(make_lbl, axis=1)
+            
+            # Find row
+            row = df[df['Label'] == selected_label].iloc[0]
+            
+            # Extract Details
+            name_val = str(row[name_col])
+            
+            # Price
+            price_val = 0.0
+            price_cols = [c for c in df.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
+            for p_col in price_cols:
+                val_clean = str(row[p_col]).replace('A$', '').replace('$', '').replace(',', '').strip()
+                try:
+                    if val_clean and val_clean.lower() != 'nan':
+                        price_val = float(val_clean); break
+                except: continue
+            
+            # Description
+            desc_val = ""
+            desc_cols = [c for c in df.columns if any(x in c.lower() for x in ['desc', 'spec', 'detail'])]
+            if desc_cols:
+                desc_val = str(row[desc_cols[0]])
+                if desc_val.lower() == 'nan': desc_val = ""
 
-    item = normalize_items([item])[0]
-    st.session_state['quote_items'].append(item)
-    
-    st.session_state["q_search_product"] = None
-    st.toast(f"Added: {item['name']}")
+            # Update Session State for Inputs
+            st.session_state['input_name'] = name_val
+            st.session_state['input_desc'] = desc_val
+            st.session_state['input_price'] = price_val
+            
+        except Exception as e:
+            print(f"Error autofilling: {e}")
 
 # --- PDF GENERATOR ---
 class QuotePDF(FPDF):
@@ -72,7 +130,6 @@ def create_pdf(quote_row):
     created_at = str(quote_row['created_at'])[:10]
     expire_date = str(quote_row.get('expiration_date', ''))
     
-    # Recalculate Logic
     subtotal_ex_gst = 0
     total_discount = 0
     
@@ -96,14 +153,10 @@ def create_pdf(quote_row):
     # --- INFO HEADER ---
     pdf.set_font('Arial', '', 10)
     right_x = 130
-    pdf.set_xy(right_x, 20)
-    pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, quote_id, 0, 1)
-    pdf.set_x(right_x)
-    pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, created_at, 0, 1)
-    pdf.set_x(right_x)
-    pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, expire_date, 0, 1)
-    pdf.set_x(right_x)
-    pdf.cell(30, 6, "Currency:", 0, 0); pdf.cell(30, 6, "AUD", 0, 1)
+    pdf.set_xy(right_x, 20); pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, quote_id, 0, 1)
+    pdf.set_x(right_x); pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, created_at, 0, 1)
+    pdf.set_x(right_x); pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, expire_date, 0, 1)
+    pdf.set_x(right_x); pdf.cell(30, 6, "Currency:", 0, 0); pdf.cell(30, 6, "AUD", 0, 1)
     pdf.ln(10)
     
     # --- SELLER / BUYER ---
@@ -123,7 +176,6 @@ def create_pdf(quote_row):
     
     # --- LINE ITEMS ---
     pdf.set_font('Arial', 'B', 12); pdf.cell(0, 10, "Line Items", 0, 1)
-    
     pdf.set_font('Arial', 'B', 9); pdf.set_fill_color(245, 245, 245)
     pdf.cell(85, 8, "Item", 1, 0, 'L', True)
     pdf.cell(15, 8, "Qty", 1, 0, 'C', True)
@@ -154,371 +206,345 @@ def create_pdf(quote_row):
         pdf.cell(25, 8, f"${price:,.2f}", 1, 0, 'R')
         pdf.cell(30, 8, disc_str, 1, 0, 'R')
         pdf.cell(35, 8, f"${net_total:,.2f}", 1, 1, 'R')
-
     pdf.ln(5)
     
     # --- SUMMARY ---
-    pdf.set_x(120)
-    pdf.cell(35, 6, "Subtotal (Ex GST):", 0, 0, 'R'); pdf.cell(35, 6, f"${subtotal_ex_gst:,.2f}", 0, 1, 'R')
-    pdf.set_x(120)
-    pdf.cell(35, 6, "Total Discount:", 0, 0, 'R'); pdf.cell(35, 6, f"-${total_discount:,.2f}", 0, 1, 'R')
-    pdf.set_x(120)
-    pdf.cell(35, 6, "GST (10%):", 0, 0, 'R'); pdf.cell(35, 6, f"${gst_amount:,.2f}", 0, 1, 'R')
-    pdf.set_x(120)
-    pdf.set_font('Arial', 'B', 10)
+    pdf.set_x(120); pdf.cell(35, 6, "Subtotal (Ex GST):", 0, 0, 'R'); pdf.cell(35, 6, f"${subtotal_ex_gst:,.2f}", 0, 1, 'R')
+    pdf.set_x(120); pdf.cell(35, 6, "Total Discount:", 0, 0, 'R'); pdf.cell(35, 6, f"-${total_discount:,.2f}", 0, 1, 'R')
+    pdf.set_x(120); pdf.cell(35, 6, "GST (10%):", 0, 0, 'R'); pdf.cell(35, 6, f"${gst_amount:,.2f}", 0, 1, 'R')
+    pdf.set_x(120); pdf.set_font('Arial', 'B', 10)
     pdf.cell(35, 8, "Grand Total:", 0, 0, 'R'); pdf.cell(35, 8, f"${grand_total:,.2f}", 0, 1, 'R')
-    
     return pdf.output(dest='S').encode('latin-1')
 
-# --- AUTH HELPERS ---
-def hash_pw(password): return hashlib.sha256(str.encode(password)).hexdigest()
-
-def check_login(username, password):
+# --- AUTH ---
+def hash_pw(p): return hashlib.sha256(str.encode(p)).hexdigest()
+def check_login(u, p):
     try: users = dm.get_users()
     except: return False, "DB Error"
     if users.empty: return False, "No users"
-    hashed = hash_pw(password)
-    user = users[(users['username'] == username) & (users['password'] == hashed)]
-    if not user.empty: return True, user.iloc[0]['role']
-    return False, "Invalid credentials"
+    user = users[(users['username'] == u) & (users['password'] == hash_pw(p))]
+    return (True, user.iloc[0]['role']) if not user.empty else (False, "Invalid")
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
 
+# Initialize inputs in session state if not present
+if 'input_name' not in st.session_state: st.session_state['input_name'] = ""
+if 'input_desc' not in st.session_state: st.session_state['input_desc'] = ""
+if 'input_price' not in st.session_state: st.session_state['input_price'] = 0.0
+
 def login_page():
-    st.title("🔐 Login")
-    u = st.text_input("Username")
-    p = st.text_input("Password", type="password")
+    st.title("🔐 Login"); u = st.text_input("User"); p = st.text_input("Pass", type="password")
     if st.button("Sign In"):
-        success, msg = check_login(u, p)
-        if success:
-            st.session_state['logged_in'] = True
-            st.session_state['user'] = u
-            dm.log_action(u, "Login", "Success"); st.rerun()
-        else: st.error(msg)
+        s, m = check_login(u, p)
+        if s: st.session_state['logged_in'] = True; st.session_state['user'] = u; st.rerun()
+        else: st.error(m)
 
 def main_app():
     st.sidebar.title(f"User: {st.session_state['user']}")
     if st.sidebar.button("Logout"): st.session_state['logged_in'] = False; st.rerun()
-        
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Quote Generator", "Upload (Direct)", "Data Update (Direct)"])
     
-    # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE
-    # =======================================================
+    # 1. SEARCH
     if menu == "Product Search & Browse":
-        st.header("🔎 Product Search & Browse")
-        if st.button("Refresh Database"):
-            dm.get_all_products_df.clear(); st.toast("Cache cleared", icon="🔄"); time.sleep(1); st.rerun()
-        
+        st.header("🔎 Search")
+        if st.button("Refresh"): dm.get_all_products_df.clear(); st.rerun()
         try: df = dm.get_all_products_df()
         except: df = pd.DataFrame()
         
-        tab_search, tab_browse = st.tabs(["Search (Predictive)", "Browse Full Category"])
-        
-        with tab_search:
+        tab1, tab2 = st.tabs(["Predictive Search", "Full Browse"])
+        with tab1:
             if not df.empty:
-                def col_has_data(dataframe, col_name):
-                    if col_name not in dataframe.columns: return False
-                    s = dataframe[col_name].astype(str).str.strip()
-                    is_empty = s.str.lower().isin(['nan', 'none', '', 'nat'])
-                    return not is_empty.all()
-                valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
-                if valid_data_cols:
-                    name_col = None
-                    for col in valid_data_cols:
-                        if 'product' in col.lower() and 'name' in col.lower(): name_col = col; break
-                    if not name_col:
-                        for col in valid_data_cols:
-                            if 'model' in col.lower(): name_col = col; break
-                    if not name_col: name_col = valid_data_cols[0]
-
+                # Search Logic
+                def col_ok(d,c): return not d[c].astype(str).str.strip().eq('').all()
+                vcols = [c for c in df.columns if col_ok(df, c)]
+                if vcols:
+                    name_col = vcols[0]
+                    for c in vcols: 
+                        if 'product' in c.lower() or 'model' in c.lower(): name_col = c; break
+                    
                     search_df = df.copy()
-                    forbidden = ['price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 'date', 'time', 'last_updated', 'timestamp', 'category', 'class', 'group', 'segment']
-                    def make_lbl(row):
-                        main = str(row[name_col]) if pd.notnull(row[name_col]) else ""
-                        parts = [main.strip()]
-                        for col in valid_data_cols:
-                            if col == name_col: continue
-                            if any(k in col.lower() for k in forbidden): continue
-                            val = str(row[col]).strip()
-                            if val and val.lower() not in ['nan', 'none', '']:
-                                if val not in parts: parts.append(val)
-                        return " | ".join(filter(None, parts))
-                    search_df['Search_Label'] = search_df.apply(make_lbl, axis=1)
+                    forbidden = ['price', 'cost', 'date', 'category', 'srp']
+                    def mk_lbl(r):
+                        m = str(r[name_col]) if pd.notnull(r[name_col]) else ""
+                        p = [m.strip()]
+                        for c in vcols:
+                            if c!=name_col and not any(k in c.lower() for k in forbidden):
+                                v = str(r[c]).strip()
+                                if v and v.lower() not in ['nan','']: p.append(v)
+                        return " | ".join(filter(None, p))
+                    
+                    search_df['Search_Label'] = search_df.apply(mk_lbl, axis=1)
                     opts = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
-
-                    c_bar, c_clear = st.columns([8, 1])
-                    with c_bar:
-                        sel = st.selectbox("Search", options=opts, index=None, placeholder="Type Name...", key="search_box")
-                    with c_clear:
-                        if st.button("Clear"): st.session_state["search_box"] = None; st.rerun()
+                    
+                    c1, c2 = st.columns([8, 1])
+                    sel = c1.selectbox("Search", opts, index=None, placeholder="Type...", key="s_main")
+                    if c2.button("Clear"): st.session_state["s_main"] = None; st.rerun()
                     
                     st.divider()
                     if sel:
-                        res = search_df[search_df['Search_Label'] == sel].drop(columns=['Search_Label'])
-                        for i, row in res.iterrows():
-                            with st.expander(f"📦 {row[name_col]}", expanded=True):
-                                hidden = ['price', 'cost', 'srp', 'msrp', 'rrp', 'margin']
+                        res = search_df[search_df['Search_Label'] == sel]
+                        for i, r in res.iterrows():
+                            with st.expander(f"📦 {r[name_col]}", expanded=True):
+                                # Display
+                                hidden = ['price','cost','srp','msrp']
                                 all_c = res.columns.tolist()
                                 price_c = [c for c in all_c if any(k in c.lower() for k in hidden)]
-                                public_c = [c for c in all_c if c not in price_c]
-                                for c in public_c:
-                                    v = str(row[c]).strip()
-                                    if v and v.lower()!='nan': st.write(f"**{c}:** {row[c]}")
+                                public = [c for c in all_c if c not in price_c and c!='Search_Label']
+                                for c in public:
+                                    v = str(r[c]).strip()
+                                    if v and v.lower()!='nan': st.write(f"**{c}:** {r[c]}")
                                 if price_c:
                                     st.markdown("---")
-                                    if st.toggle("Show Price 💰", key=f"t_{i}"):
+                                    if st.toggle("Show Price", key=f"t_{i}"):
                                         cols = st.columns(len(price_c))
                                         for idx, p in enumerate(price_c):
-                                            try: val = f"{float(row[p]):,.2f}"
-                                            except: val = row[p]
-                                            cols[idx].metric(p, val)
-            else: st.warning("Database empty.")
+                                            cols[idx].metric(p, r[p])
+            else: st.warning("Empty DB")
         
-        with tab_browse:
-            try: cats = dm.get_categories()
-            except: cats = []
+        with tab2:
+            cats = dm.get_categories()
             if cats:
                 cs = st.selectbox("Category", cats)
                 if not df.empty and 'category' in df.columns:
                     cd = df[df['category'] == cs]
-                    if not cd.empty:
-                        st.dataframe(cd, use_container_width=True)
-                        out = BytesIO()
-                        with pd.ExcelWriter(out) as w: cd.to_excel(w, index=False)
-                        st.download_button(f"⬇️ Download {cs}", out.getvalue(), f"{cs}.xlsx")
-                    else: st.info("No data.")
-            else: st.warning("No categories.")
+                    st.dataframe(cd, use_container_width=True)
 
-    # =======================================================
-    # 2. QUOTE GENERATOR
-    # =======================================================
+    # 2. QUOTE
     elif menu == "Quote Generator":
         st.header("📝 Quotes")
-        tab_create, tab_history = st.tabs(["Create New Quote", "Quote History & Downloads"])
+        tab_create, tab_hist = st.tabs(["Create Quote", "History"])
         
         with tab_create:
             try: df = dm.get_all_products_df()
             except: df = pd.DataFrame()
+            
+            # --- A. UNIFIED ADD ITEM SECTION ---
+            st.subheader("1. Add Line Item")
+            st.caption("Search for a product to auto-fill details, OR simply type to add a custom item.")
+            
+            # 1. Search Box (Populates session state inputs)
+            if not df.empty:
+                # Reuse Search Logic for dropdown
+                # ... (Same logic as above to generate clean labels) ...
+                def col_ok(d,c): return not d[c].astype(str).str.strip().eq('').all()
+                vcols = [c for c in df.columns if col_ok(df, c)]
+                if vcols:
+                    name_col = vcols[0]
+                    for c in vcols: 
+                        if 'product' in c.lower() or 'model' in c.lower(): name_col = c; break
+                    
+                    search_df = df.copy()
+                    forbidden = ['price', 'cost', 'date', 'category', 'srp']
+                    def mk_lbl(r):
+                        m = str(r[name_col]) if pd.notnull(r[name_col]) else ""
+                        if m.lower() in ['nan','']: return None
+                        p = [m.strip()]
+                        for c in vcols:
+                            if c!=name_col and not any(k in c.lower() for k in forbidden):
+                                v = str(r[c]).strip()
+                                if v and v.lower() not in ['nan','']: p.append(v)
+                        return " | ".join(filter(None, p))
+                    
+                    search_df['Label'] = search_df.apply(mk_lbl, axis=1)
+                    opts = sorted([x for x in search_df['Label'].unique().tolist() if x])
+                    
+                    # Search Box with Callback
+                    st.selectbox(
+                        "Search Database (Optional)", 
+                        options=opts, 
+                        index=None, 
+                        placeholder="Select a product to auto-fill...",
+                        key="q_search_product",
+                        on_change=on_product_select # Triggers auto-fill
+                    )
 
-            c_details, c_items = st.columns([1, 2])
-            with c_details:
-                st.subheader("1. Client Details")
-                with st.container(border=True):
-                    q_client = st.text_input("Client Name / Company", key="q_client", value=st.session_state.get('edit_client', ''))
-                    q_email = st.text_input("Client Email", key="q_email", value=st.session_state.get('edit_email', ''))
-                    q_date = st.date_input("Date", date.today())
-                    q_expire = st.date_input("Expiration Date", date.today())
-                    q_terms = st.text_area("Terms & Conditions", "Payment due within 30 days.")
-
-            with c_items:
-                st.subheader("2. Line Items")
-                t_db, t_manual = st.tabs(["Search Database", "➕ Add Custom Item"])
+            # 2. Input Form (Pre-filled by search, but editable)
+            with st.container(border=True):
+                c1, c2 = st.columns([1, 2])
+                # Note: We use keys matching what on_product_select updates
+                name_in = c1.text_input("Product Name", key="input_name")
+                desc_in = c2.text_input("Description", key="input_desc")
                 
-                with t_db:
-                    if not df.empty:
-                        def col_has_data(dataframe, col_name):
-                            if col_name not in dataframe.columns: return False
-                            s = dataframe[col_name].astype(str).str.strip()
-                            is_empty = s.str.lower().isin(['nan', 'none', '', 'nat', 'null'])
-                            return not is_empty.all()
-
-                        valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
-                        if valid_data_cols:
-                            name_col = None
-                            for col in valid_data_cols:
-                                if 'product' in col.lower() and 'name' in col.lower(): name_col = col; break
-                            if not name_col:
-                                for col in valid_data_cols:
-                                    if 'model' in col.lower(): name_col = col; break
-                            if not name_col: name_col = valid_data_cols[0]
-
-                            search_df = df.copy()
-                            forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp']
-                            
-                            def make_lbl(row):
-                                main = str(row[name_col]) if pd.notnull(row[name_col]) else ""
-                                if main.lower() in ['nan', 'none', '']: return None 
-                                parts = [main.strip()]
-                                for col in valid_data_cols:
-                                    if col == name_col: continue
-                                    if any(k in col.lower() for k in forbidden): continue
-                                    val = str(row[col]).strip()
-                                    if val and val.lower() not in ['nan', 'none', '']:
-                                        if val not in parts: parts.append(val)
-                                return " | ".join(filter(None, parts))
-
-                            search_df['Label'] = search_df.apply(make_lbl, axis=1)
-                            opts = sorted([x for x in search_df['Label'].unique().tolist() if x])
-                            
-                            sel_lbl = st.selectbox("Find Product", options=opts, index=None, placeholder="Type Name...", key="q_search_product")
-                            
-                            if sel_lbl:
-                                row = search_df[search_df['Label'] == sel_lbl].iloc[0]
-                                price_guess = 0.0
-                                price_cols = [c for c in df.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
-                                for p_col in price_cols:
-                                    val_raw = str(row[p_col])
-                                    val_clean = val_raw.replace('A$', '').replace('$', '').replace(',', '').strip()
-                                    try:
-                                        if val_clean and val_clean.lower() != 'nan':
-                                            price_guess = float(val_clean); break 
-                                    except: continue
-                                
-                                # -- NEW: Try to find description column --
-                                desc_guess = ""
-                                desc_cols = [c for c in df.columns if any(x in c.lower() for x in ['desc', 'spec', 'detail'])]
-                                if desc_cols:
-                                    desc_guess = str(row[desc_cols[0]])
-                                    if desc_guess.lower() == 'nan': desc_guess = ""
-
-                                c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
-                                aq = c1.number_input("Qty", 1, 1000, 1, key=f"q_{sel_lbl}")
-                                ap = c2.number_input("Unit Price", value=price_guess, key=f"p_{sel_lbl}")
-                                ad_val = c3.number_input("Discount", 0.0, step=1.0, key=f"d_{sel_lbl}")
-                                ad_type = c4.selectbox("Type", ["%", "$"], key=f"t_{sel_lbl}")
-                                
-                                item_to_add = {
-                                    "name": str(row[name_col]), 
-                                    "desc": desc_guess, # Added loaded desc
-                                    "qty": aq, "price": ap,
-                                    "discount_val": ad_val, "discount_type": ad_type,
-                                    "total": 0
-                                }
-                                
-                                st.button("Add to Quote", key="btn_add_db", on_click=add_quote_item_callback, args=(item_to_add,))
-
-                with t_manual:
-                    with st.form("manual_add", clear_on_submit=True):
-                        mn = st.text_input("Product Name")
-                        md = st.text_input("Description") # Added Desc input
-                        c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
-                        mq = c1.number_input("Qty", 1, 1000, 1)
-                        mp = c2.number_input("Unit Price ($)", 0.0)
-                        md_val = c3.number_input("Discount", 0.0)
-                        md_type = c4.selectbox("Type", ["%", "$"])
-                        
-                        if st.form_submit_button("Add Custom Item"):
-                            if mn:
-                                item = {
-                                    "name": mn, "desc": md,
-                                    "qty": mq, "price": mp,
-                                    "discount_val": md_val, "discount_type": md_type,
-                                    "total": 0
-                                }
-                                add_quote_item_callback(item) 
-                                st.rerun()
+                c3, c4, c5, c6 = st.columns(4)
+                qty_in = c3.number_input("Qty", min_value=1.0, value=1.0, step=1.0)
+                price_in = c4.number_input("Unit Price ($)", value=st.session_state.get('input_price', 0.0), key="input_price")
+                disc_val = c5.number_input("Discount", 0.0)
+                disc_type = c6.selectbox("Type", ["%", "$"])
+                
+                if st.button("➕ Add Line Item"):
+                    if name_in:
+                        # Add to list
+                        item = {
+                            "name": name_in,
+                            "desc": desc_in,
+                            "qty": qty_in,
+                            "price": price_in,
+                            "discount_val": disc_val,
+                            "discount_type": disc_type,
+                            "total": 0 # Calc later
+                        }
+                        st.session_state['quote_items'].append(item)
+                        # Clear inputs
+                        st.session_state['input_name'] = ""
+                        st.session_state['input_desc'] = ""
+                        st.session_state['input_price'] = 0.0
+                        st.session_state['q_search_product'] = None
+                        st.rerun()
+                    else:
+                        st.error("Item Name is required.")
 
             st.divider()
             
+            # --- B. REVIEW TABLE (EDITABLE) ---
+            st.subheader("2. Review Items")
+            
             if st.session_state['quote_items']:
+                # Normalize first to prevent errors
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
-                # --- UPDATED EDITOR CONFIG ---
+                # Config Editable Columns
                 edited_df = st.data_editor(
-                    q_df, num_rows="dynamic", use_container_width=True, key="editor_quote",
+                    q_df,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="editor_quote",
                     column_config={
-                        "name": st.column_config.TextColumn("Item Name", disabled=True),
-                        "desc": st.column_config.TextColumn("Description"), # Editable
+                        "name": st.column_config.TextColumn("Item Name", required=True),
+                        "desc": st.column_config.TextColumn("Description"),
+                        "qty": st.column_config.NumberColumn("Qty", min_value=1, required=True),
                         "price": st.column_config.NumberColumn("Unit Price", format="$%.2f", required=True),
-                        "qty": st.column_config.NumberColumn("Qty", min_value=1, step=1, required=True),
-                        "discount_val": st.column_config.NumberColumn("Discount Value", min_value=0.0),
+                        "discount_val": st.column_config.NumberColumn("Discount", min_value=0.0),
                         "discount_type": st.column_config.SelectboxColumn("Type", options=["%", "$"], required=True),
                         "total": st.column_config.NumberColumn("Net Total", format="$%.2f", disabled=True)
                     }
                 )
                 
+                # Recalculate Totals from Edited Data
                 sub_ex = 0; tot_disc = 0; items_save = []
                 for index, row in edited_df.iterrows():
                     q = float(row.get('qty', 0)); p = float(row.get('price', 0))
                     d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
                     
-                    # Update desc in memory
-                    d_text = str(row.get('desc', ''))
-
                     gross = q * p
                     disc = gross * (d/100) if t == '%' else d
                     net = gross - disc
-                    sub_ex += net; tot_disc += disc
-                    r = row.to_dict(); r['total'] = net; r['desc'] = d_text
+                    
+                    sub_ex += net
+                    tot_disc += disc
+                    
+                    # Update Row Data
+                    r = row.to_dict()
+                    r['total'] = net
                     items_save.append(r)
 
                 gst = sub_ex * 0.10
                 grand = sub_ex + gst
 
+                # Display Totals
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Subtotal (Ex GST)", f"${sub_ex:,.2f}")
                 m2.metric("Total Discount", f"${tot_disc:,.2f}")
                 m3.metric("GST (10%)", f"${gst:,.2f}")
                 m4.metric("Grand Total", f"${grand:,.2f}")
                 
-                c_sv, c_cl = st.columns([1, 5])
-                if c_sv.button("💾 Save Quote", type="primary"):
-                    if not q_client: st.error("Client Name Required")
-                    else:
-                        payload = {"client_name": q_client, "client_email": q_email, "total_amount": grand, "expiration_date": str(q_expire), "items": items_save}
-                        dm.save_quote(payload, st.session_state['user'])
-                        st.success("Saved!"); st.session_state['quote_items'] = []; time.sleep(1); st.rerun()
-                if c_cl.button("Clear All"): st.session_state['quote_items'] = []; st.rerun()
+                # --- C. SAVE SECTION ---
+                st.subheader("3. Client Details & Save")
+                c_details, c_actions = st.columns([2, 1])
+                
+                with c_details:
+                    with st.container(border=True):
+                        q_client = st.text_input("Client Name", value=st.session_state.get('edit_client', ''))
+                        q_email = st.text_input("Email", value=st.session_state.get('edit_email', ''))
+                        q_date = st.date_input("Date", date.today())
+                        q_expire = st.date_input("Expires", date.today())
+                
+                with c_actions:
+                    st.write("") # Spacing
+                    st.write("")
+                    if st.button("💾 Save Quote", type="primary", use_container_width=True):
+                        if not q_client: st.error("Client Name Required")
+                        else:
+                            payload = {
+                                "client_name": q_client,
+                                "client_email": q_email,
+                                "total_amount": grand,
+                                "expiration_date": str(q_expire),
+                                "items": items_save
+                            }
+                            dm.save_quote(payload, st.session_state['user'])
+                            st.success("Quote Saved!")
+                            st.session_state['quote_items'] = []
+                            st.session_state['input_name'] = ""
+                            time.sleep(1); st.rerun()
+                    
+                    if st.button("Clear All Items", use_container_width=True):
+                        st.session_state['quote_items'] = []
+                        st.rerun()
+            else:
+                st.info("No items added yet.")
 
-        with tab_history:
+        # --- HISTORY ---
+        with tab_hist:
             st.subheader("📜 Quote History")
-            if st.button("Refresh"): dm.get_quotes.clear(); st.rerun()
-            quotes_df = dm.get_quotes()
-            if not quotes_df.empty:
-                quotes_df = quotes_df.sort_values(by="created_at", ascending=False)
-                for i, row in quotes_df.iterrows():
+            if st.button("Refresh List"): dm.get_quotes.clear(); st.rerun()
+            q_hist = dm.get_quotes()
+            if not q_hist.empty:
+                q_hist = q_hist.sort_values(by="created_at", ascending=False)
+                for i, row in q_hist.iterrows():
                     with st.expander(f"{row['created_at']} | {row['client_name']} | ${float(row['total_amount']):,.2f}"):
                         c1, c2, c3 = st.columns(3)
                         try:
-                            pdf_bytes = create_pdf(row)
-                            c1.download_button("📩 Download Quote (PDF)", data=pdf_bytes, file_name=f"Quote_{row['quote_id']}.pdf", mime="application/pdf")
-                        except Exception as e: c1.error(f"PDF Error: {e}")
+                            pdf = create_pdf(row)
+                            c1.download_button("📩 PDF", pdf, f"Quote_{row['quote_id']}.pdf", "application/pdf")
+                        except: c1.error("PDF Error")
                         
-                        if c2.button("✏️ Edit Quote", key=f"e_{row['quote_id']}"):
-                            loaded_items = json.loads(row['items_json'])
-                            st.session_state['quote_items'] = normalize_items(loaded_items)
+                        if c2.button("✏️ Edit", key=f"e_{row['quote_id']}"):
+                            st.session_state['quote_items'] = normalize_items(json.loads(row['items_json']))
                             st.session_state['edit_client'] = row['client_name']
                             st.session_state['edit_email'] = row.get('client_email', '')
-                            st.toast("Loaded!"); time.sleep(1)
+                            st.toast("Loaded to Create Tab"); time.sleep(1)
+                        
                         if c3.button("🗑️ Delete", key=f"d_{row['quote_id']}"):
-                            dm.delete_quote(row['quote_id'], st.session_state['user']); st.rerun()
-            else: st.info("No quotes found.")
+                            dm.delete_quote(row['quote_id'], st.session_state['user'])
+                            st.rerun()
+            else: st.info("No history.")
 
+    # 3. UPLOAD
     elif menu == "Upload (Direct)":
-        st.header("📂 File Upload"); c_left, c_right = st.columns([1, 1])
-        with c_left:
-            cats = dm.get_categories(); cat_sel = st.selectbox("Category", cats if cats else ["Default"])
-        with c_right:
-            new_cat = st.text_input("New Cat"); 
+        st.header("📂 Upload"); c1, c2 = st.columns(2)
+        with c1: 
+            cats = dm.get_categories()
+            c_sel = st.selectbox("Category", cats if cats else ["Default"])
+        with c2:
+            new_c = st.text_input("New Category")
             if st.button("Add"): 
-                if new_cat: dm.add_category(new_cat, st.session_state['user']); st.rerun()
-        files = st.file_uploader("Upload", accept_multiple_files=True)
-        has_h = st.checkbox("Headers?", True)
-        if files:
-            for f in files:
+                if new_c: dm.add_category(new_c, st.session_state['user']); st.rerun()
+        
+        up = st.file_uploader("File", accept_multiple_files=True)
+        hh = st.checkbox("Headers?", True)
+        if up:
+            for f in up:
                 if st.button(f"Save {f.name}"):
                     try:
-                        h = 0 if has_h else None
-                        df = pd.read_csv(f, header=h) if f.name.endswith('csv') else pd.read_excel(f, header=h)
-                        dm.save_products_dynamic(df.dropna(how='all'), cat_sel, st.session_state['user'])
+                        df = pd.read_csv(f, header=0 if hh else None) if f.name.endswith('csv') else pd.read_excel(f, header=0 if hh else None)
+                        dm.save_products_dynamic(df.dropna(how='all'), c_sel, st.session_state['user'])
                         st.success("Saved!"); time.sleep(1); st.rerun()
                     except Exception as e: st.error(str(e))
 
+    # 4. UPDATE
     elif menu == "Data Update (Direct)":
-        st.header("🔄 Update"); cats = dm.get_categories(); cat_sel = st.selectbox("Category", cats)
+        st.header("🔄 Update"); cats = dm.get_categories(); c_sel = st.selectbox("Category", cats)
         up = st.file_uploader("New File"); hh = st.checkbox("Headers?", True, key="uph")
         if up:
-            h = 0 if hh else None
-            df = pd.read_csv(up, header=h) if up.name.endswith('csv') else pd.read_excel(up, header=h)
+            df = pd.read_csv(up, header=0 if hh else None) if up.name.endswith('csv') else pd.read_excel(up, header=0 if hh else None)
             st.write(df.head(3))
-            cols = list(df.columns); k = st.selectbox("ID Column", cols)
+            k = st.selectbox("ID Column", list(df.columns))
             if st.button("Update"):
-                r = dm.update_products_dynamic(df, cat_sel, st.session_state['user'], k)
-                st.success(f"New: {r['new']}, EOL: {r['eol']}")
+                r = dm.update_products_dynamic(df, c_sel, st.session_state['user'], k)
+                st.success(f"Updated. New: {r['new']}, EOL: {r['eol']}")
 
 if st.session_state['logged_in']: main_app()
 else: login_page()
