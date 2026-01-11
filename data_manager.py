@@ -26,7 +26,10 @@ def get_sheet():
 def get_users():
     try:
         ws = get_sheet().worksheet("users")
-        return pd.DataFrame(ws.get_all_records())
+        # Robust read
+        data = ws.get_all_values()
+        if not data: return pd.DataFrame(columns=["username", "password", "email", "status", "role"])
+        return pd.DataFrame(data[1:], columns=data[0])
     except:
         return pd.DataFrame(columns=["username", "password", "email", "status", "role"])
 
@@ -34,9 +37,10 @@ def get_users():
 def get_categories():
     try:
         ws = get_sheet().worksheet("categories")
-        records = ws.get_all_records()
-        if not records: return []
-        return [r['category_name'] for r in records if 'category_name' in r and r['category_name']]
+        data = ws.get_all_values()
+        if len(data) < 2: return []
+        df = pd.DataFrame(data[1:], columns=data[0])
+        return df['category_name'].tolist()
     except:
         return []
 
@@ -64,23 +68,37 @@ def get_all_products_df():
         return pd.DataFrame()
 
     final_df = pd.concat(all_dfs, ignore_index=True)
+    # Filter out empty or all-NA columns to prevent issues
     final_df = final_df.dropna(axis=1, how='all')
     return final_df
 
-@st.cache_data(ttl=5) # Short TTL for quote history
+@st.cache_data(ttl=5) 
 def get_quotes():
-    """Fetches all quotes from the 'quotes' sheet."""
-    # NO TRY/EXCEPT HERE -> Show the error if it fails!
+    """Fetches all quotes using a robust method that ignores empty headers."""
     try:
         ws = get_sheet().worksheet("quotes")
-        records = ws.get_all_records()
-        if not records: return pd.DataFrame()
-        return pd.DataFrame(records)
+        data = ws.get_all_values()
+        
+        if not data or len(data) < 2: 
+            return pd.DataFrame()
+            
+        headers = data[0]
+        rows = data[1:]
+        
+        # FIX: Filter out empty header strings to avoid "duplicate empty header" error
+        # We only keep columns that actually have a header name
+        valid_indices = [i for i, h in enumerate(headers) if h.strip()]
+        valid_headers = [headers[i] for i in valid_indices]
+        
+        # Filter rows to match valid headers
+        cleaned_rows = [[row[i] if i < len(row) else "" for i in valid_indices] for row in rows]
+        
+        return pd.DataFrame(cleaned_rows, columns=valid_headers)
+        
     except gspread.WorksheetNotFound:
-        return pd.DataFrame() # Return empty if sheet doesn't exist yet
+        return pd.DataFrame()
     except Exception as e:
-        # This will print the error to the app so we can debug
-        st.error(f"Error fetching Quote History: {str(e)}")
+        st.error(f"DB Error: {str(e)}")
         return pd.DataFrame()
 
 # --- WRITE FUNCTIONS ---
@@ -120,7 +138,14 @@ def add_category(name, user):
         ws = sh.add_worksheet(title="categories", rows=100, cols=3)
         ws.append_row(["category_name", "created_by", "created_at"])
     
-    existing = [r['category_name'] for r in ws.get_all_records()]
+    # Robust read for checking existence
+    data = ws.get_all_values()
+    existing = []
+    if len(data) > 1:
+        df = pd.DataFrame(data[1:], columns=data[0])
+        if 'category_name' in df.columns:
+            existing = df['category_name'].tolist()
+
     if name not in existing:
         ws.append_row([name, user, str(datetime.now())])
         
@@ -207,23 +232,21 @@ def save_quote(quote_data, user):
         ws = sh.worksheet("quotes")
     except:
         ws = sh.add_worksheet(title="quotes", rows=1000, cols=15)
-        # HEADER ROW - Defines the schema
         ws.append_row([
             "quote_id", "created_at", "created_by", 
-            "client_name", "client_email", "client_phone",  # Added Phone Header
+            "client_name", "client_email", "client_phone", 
             "status", "total_amount", "items_json", "expiration_date"
         ])
     
     quote_id = f"Q-{int(time.time())}"
     
-    # Ensure the row matches the header order above
     row = [
         quote_id,
         str(datetime.now()),
         user,
         quote_data.get("client_name", ""),
         quote_data.get("client_email", ""),
-        quote_data.get("client_phone", ""), # Save Phone
+        quote_data.get("client_phone", ""),
         "Draft",
         quote_data.get("total_amount", 0),
         json.dumps(quote_data.get("items", [])),
