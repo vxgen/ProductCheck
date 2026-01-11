@@ -24,9 +24,7 @@ def safe_float(val):
 def sanitize_text(text):
     """Removes special characters that crash FPDF (e.g. emojis)."""
     if not isinstance(text, str): return str(text)
-    # Replace common smart quotes or dashes
     text = text.replace('\u2013', '-').replace('\u2019', "'")
-    # Encode to latin-1 to strip incompatible chars
     return text.encode('latin-1', 'replace').decode('latin-1')
 
 def normalize_items(items):
@@ -53,6 +51,7 @@ def normalize_items(items):
         clean.append(n)
     return clean
 
+# --- SEARCH LOGIC ---
 def generate_search_labels(df):
     if df.empty: return df, None
     def col_ok(d, c): return not d[c].astype(str).str.strip().eq('').all()
@@ -100,8 +99,7 @@ def extract_product_data(label, df_with_labels, name_col):
         p_desc = " | ".join(parts)
     return {"name": p_name, "desc": p_desc, "price": p_price}
 
-# --- 2. CALLBACKS ---
-
+# --- CALLBACKS ---
 def on_search_change():
     lbl = st.session_state.get("q_search_product")
     if lbl:
@@ -141,7 +139,6 @@ def save_quote_cb():
     items = normalize_items(items)
     total = sum(i['total'] for i in items) * 1.10
     
-    # Ensure Expiration is a String
     exp_val = st.session_state.get("q_expire_input")
     exp_str = str(exp_val) if exp_val else ""
 
@@ -158,7 +155,7 @@ def save_quote_cb():
     st.session_state['input_name'] = ""
     st.toast("Quote Saved!", icon="✅")
 
-# --- 3. PDF ENGINE ---
+# --- PDF ENGINE ---
 class QuotePDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 20); self.cell(80, 10, 'MSI', 0, 0, 'L') 
@@ -174,7 +171,6 @@ def create_pdf(quote_row):
     try: items = normalize_items(json.loads(raw_items))
     except: items = []
     
-    # Sanitize
     c_name = sanitize_text(quote_row.get('client_name', ''))
     c_email = sanitize_text(quote_row.get('client_email', ''))
     c_phone = sanitize_text(str(quote_row.get('client_phone', '')))
@@ -186,7 +182,6 @@ def create_pdf(quote_row):
     sub = sum(i['total'] for i in items)
     gst = sub * 0.10; grand = sub + gst
     
-    # Header
     pdf.set_font('Arial', '', 10); rx = 130
     pdf.set_xy(rx, 20); pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, qid, 0, 1)
     pdf.set_x(rx); pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, dt, 0, 1)
@@ -210,7 +205,6 @@ def create_pdf(quote_row):
     if c_phone and c_phone != 'nan': pdf.set_x(110); pdf.cell(80, 5, f"Phone: {c_phone}", 0, 1)
     pdf.ln(15)
     
-    # Table Header
     pdf.set_font('Arial', 'B', 10); pdf.set_fill_color(240, 240, 240)
     pdf.cell(90, 8, "Item", 1, 0, 'L', True); pdf.cell(15, 8, "Qty", 1, 0, 'C', True)
     pdf.cell(25, 8, "Price", 1, 0, 'R', True); pdf.cell(30, 8, "Disc", 1, 0, 'R', True)
@@ -222,16 +216,13 @@ def create_pdf(quote_row):
     else:
         for i in items:
             nm = sanitize_text(i['name'])
-            # Basic wrap or truncation
             if len(nm)>50: nm = nm[:47]+"..."
-            
             ds = f"{i['discount_val']}%" if i['discount_type']=='%' else f"${i['discount_val']}"
             pdf.cell(90, 8, nm, 1, 0, 'L')
             pdf.cell(15, 8, str(int(i['qty'])), 1, 0, 'C')
             pdf.cell(25, 8, f"${i['price']:,.2f}", 1, 0, 'R')
             pdf.cell(30, 8, ds, 1, 0, 'R')
             pdf.cell(30, 8, f"${i['total']:,.2f}", 1, 1, 'R')
-            
             d_txt = sanitize_text(i['desc'])
             if d_txt:
                 pdf.set_font('Arial', 'I', 8)
@@ -327,7 +318,6 @@ def main_app():
                     }
                 )
                 
-                # Logic to intercept long-string selection
                 new_items = []; trigger_reset = False
                 for idx, row in edited.iterrows():
                     nm = str(row['name'])
@@ -367,7 +357,6 @@ def main_app():
                 if 'created_at' in hist.columns: hist = hist.sort_values('created_at', ascending=False)
                 
                 for i, r in hist.iterrows():
-                    # Fallback Total
                     try:
                         amt = safe_float(r.get('total_amount', 0))
                         if amt == 0 and 'items_json' in r:
@@ -402,6 +391,27 @@ def main_app():
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
+
+# --- AUTH FUNCTION ---
+def check_login(u, p):
+    try: users = dm.get_users()
+    except: return False, "DB Error"
+    if users.empty: return False, "No users"
+    # Basic check - ensure users exists
+    user = users[(users['username'] == u) & (users['password'] == hashlib.sha256(str.encode(p)).hexdigest())]
+    return (True, user.iloc[0]['role']) if not user.empty else (False, "Invalid")
+
+def login_page():
+    st.title("🔐 Login")
+    u = st.text_input("User")
+    p = st.text_input("Pass", type="password")
+    if st.button("Sign In"):
+        s, m = check_login(u, p)
+        if s: 
+            st.session_state['logged_in'] = True
+            st.session_state['user'] = u
+            st.rerun()
+        else: st.error(m)
 
 if st.session_state['logged_in']: main_app()
 else: login_page()
