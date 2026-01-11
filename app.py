@@ -16,14 +16,21 @@ def safe_float(val):
     """Safely converts string to float, handling symbols and empty values."""
     try:
         clean = str(val).replace('$', '').replace(',', '').strip()
-        if not clean or clean.lower() == 'none' or clean.lower() == 'nan': return 0.0
+        if not clean or clean.lower() in ['none', 'nan']: return 0.0
         return float(clean)
     except:
         return 0.0
 
+def sanitize_text(text):
+    """Removes special characters that crash FPDF (e.g. emojis)."""
+    if not isinstance(text, str): return str(text)
+    return text.encode('latin-1', 'replace').decode('latin-1')
+
 def normalize_items(items):
     """Ensures all items have valid keys/types."""
     clean = []
+    if not isinstance(items, list): return []
+    
     for item in items:
         n = item.copy()
         n['qty'] = safe_float(n.get('qty', 1))
@@ -34,7 +41,7 @@ def normalize_items(items):
         
         if 'discount_type' not in n: n['discount_type'] = '%'
         if 'desc' not in n: n['desc'] = ""
-        if 'name' not in n or pd.isna(n['name']): n['name'] = ""
+        if 'name' not in n or pd.isna(n['name']): n['name'] = "Item"
         
         # Calc Total
         g = n['qty'] * n['price']
@@ -73,10 +80,8 @@ def extract_product_data(label, df_with_labels, name_col):
     p_price = 0.0
     p_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
     for pc in p_cols:
-        try:
-            val = str(row[pc]).replace('A$', '').replace('$', '').replace(',', '').strip()
-            if val and val.lower() != 'nan': p_price = float(val); break
-        except: continue
+        val = safe_float(row[pc])
+        if val > 0: p_price = val; break
     p_desc = ""
     d_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['long description', 'description', 'specs', 'detail'])]
     for dc in d_cols:
@@ -131,7 +136,6 @@ def save_quote_callback():
     items = st.session_state.get('quote_items', [])
     if not items: st.toast("No items to save!", icon="⚠️"); return
     
-    # Recalculate accurately before save
     items = normalize_items(items)
     sub_ex = sum(i['total'] for i in items)
     grand_total = sub_ex * 1.10
@@ -149,7 +153,7 @@ def save_quote_callback():
     st.session_state['input_name'] = ""
     st.toast("Quote Saved!", icon="✅")
 
-# --- 3. PDF ENGINE ---
+# --- 3. PDF ENGINE (ROBUST) ---
 class QuotePDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 20); self.cell(80, 10, 'MSI', 0, 0, 'L') 
@@ -161,19 +165,22 @@ class QuotePDF(FPDF):
 
 def create_pdf(quote_row):
     pdf = QuotePDF(); pdf.add_page(); pdf.set_auto_page_break(True, 15)
-    items = normalize_items(json.loads(quote_row['items_json']))
-    c_name = quote_row['client_name']
-    c_email = quote_row.get('client_email', '')
-    c_phone = str(quote_row.get('client_phone', '')) 
-    qid = str(quote_row['quote_id'])
-    dt = str(quote_row['created_at'])[:10]
+    
+    # SAFE LOAD ITEMS
+    try: items = normalize_items(json.loads(quote_row.get('items_json', '[]')))
+    except: items = []
+    
+    # SANITIZE INPUTS (Prevents Unicode Crash)
+    c_name = sanitize_text(quote_row.get('client_name', 'Client'))
+    c_email = sanitize_text(quote_row.get('client_email', ''))
+    c_phone = sanitize_text(str(quote_row.get('client_phone', '')))
+    qid = sanitize_text(str(quote_row.get('quote_id', 'Q-000')))
+    dt = str(quote_row.get('created_at', ''))[:10]
     exp = str(quote_row.get('expiration_date', ''))
     
-    sub = 0; disc_tot = 0
-    for i in items:
-        sub += i['total']
-        g = i['qty']*i['price']; disc_tot += (g - i['total'])
+    sub = sum(i['total'] for i in items)
     gst = sub * 0.10; grand = sub + gst
+    disc_tot = sum((i['qty']*i['price'] - i['total']) for i in items)
     
     pdf.set_font('Arial', '', 10); rx = 130
     pdf.set_xy(rx, 20); pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, qid, 0, 1)
@@ -181,6 +188,7 @@ def create_pdf(quote_row):
     pdf.set_x(rx); pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, exp, 0, 1)
     pdf.set_x(rx); pdf.cell(30, 6, "Currency:", 0, 0); pdf.cell(30, 6, "AUD", 0, 1)
     pdf.ln(10)
+    
     ys = pdf.get_y()
     pdf.set_font('Arial', 'B', 11); pdf.cell(90, 6, "Seller", 0, 1)
     pdf.set_font('Arial', '', 10)
@@ -188,6 +196,7 @@ def create_pdf(quote_row):
     pdf.cell(90, 5, "Suite 304, Level 3, 63-79 Parramatta Rd", 0, 1)
     pdf.cell(90, 5, "Silverwater, NSW 2128, Australia", 0, 1)
     pdf.cell(90, 5, "Contact: Vincent Xu (vincentxu@msi.com)", 0, 1)
+    
     pdf.set_xy(110, ys)
     pdf.set_font('Arial', 'B', 11); pdf.cell(80, 6, "Buyer", 0, 1)
     pdf.set_x(110); pdf.set_font('Arial', '', 10)
@@ -195,25 +204,32 @@ def create_pdf(quote_row):
     pdf.set_x(110); pdf.cell(80, 5, f"Email: {c_email}", 0, 1)
     if c_phone: pdf.set_x(110); pdf.cell(80, 5, f"Phone: {c_phone}", 0, 1)
     pdf.ln(15)
+    
     pdf.set_font('Arial', 'B', 12); pdf.cell(0, 10, "Line Items", 0, 1)
     pdf.set_font('Arial', 'B', 9); pdf.set_fill_color(245, 245, 245)
     pdf.cell(85, 8, "Item", 1, 0, 'L', True); pdf.cell(15, 8, "Qty", 1, 0, 'C', True)
     pdf.cell(25, 8, "Unit Price", 1, 0, 'R', True); pdf.cell(30, 8, "Discount", 1, 0, 'R', True)
     pdf.cell(35, 8, "Net Total", 1, 1, 'R', True)
+    
     pdf.set_font('Arial', '', 9)
     for i in items:
-        nm = i['name'][:42]+"..." if len(i['name'])>45 else i['name']
+        nm = sanitize_text(i['name'])
+        if len(nm)>45: nm = nm[:42]+"..."
+        
         ds = f"{i['discount_val']}%" if i['discount_type']=='%' else f"${i['discount_val']}"
         pdf.cell(85, 8, nm, 1, 0, 'L')
         pdf.cell(15, 8, str(int(i['qty'])), 1, 0, 'C')
         pdf.cell(25, 8, f"${i['price']:,.2f}", 1, 0, 'R')
         pdf.cell(30, 8, ds, 1, 0, 'R')
         pdf.cell(35, 8, f"${i['total']:,.2f}", 1, 1, 'R')
-        if i['desc']:
+        
+        d_txt = sanitize_text(i['desc'])
+        if d_txt:
             pdf.set_font('Arial', 'I', 8)
-            pdf.cell(85, 6, f"   {i['desc'][:90]}", 'L', 0, 'L'); pdf.cell(105, 6, "", 'R', 1)
+            pdf.cell(85, 6, f"   {d_txt[:90]}", 'L', 0, 'L'); pdf.cell(105, 6, "", 'R', 1)
             pdf.set_font('Arial', '', 9)
     pdf.ln(5)
+    
     pdf.set_x(120); pdf.cell(35, 6, "Subtotal (Ex GST):", 0, 0, 'R'); pdf.cell(35, 6, f"${sub:,.2f}", 0, 1, 'R')
     pdf.set_x(120); pdf.cell(35, 6, "Total Discount:", 0, 0, 'R'); pdf.cell(35, 6, f"-${disc_tot:,.2f}", 0, 1, 'R')
     pdf.set_x(120); pdf.cell(35, 6, "GST (10%):", 0, 0, 'R'); pdf.cell(35, 6, f"${gst:,.2f}", 0, 1, 'R')
@@ -392,31 +408,32 @@ def main_app():
             hist = dm.get_quotes()
             
             if not hist.empty:
-                # Cleanup Headers: Strip whitespace to match key
+                # Strip spaces from column names to handle messy Google Sheet headers
                 hist.columns = [c.strip() for c in hist.columns]
                 
-                # Sort if possible
                 if 'created_at' in hist.columns:
                     hist = hist.sort_values(by="created_at", ascending=False)
                 
                 for i, r in hist.iterrows():
-                    # FALLBACK CALCULATION
+                    # ROBUST TOTAL CALCULATION
                     try:
                         amt = safe_float(r.get('total_amount', 0))
-                        # If main total is 0, try to recalc from items
+                        # If 0, try to recalc from items
                         if amt == 0 and 'items_json' in r:
-                            itms = json.loads(r['items_json'])
-                            itms = normalize_items(itms)
+                            itms = normalize_items(json.loads(r['items_json']))
                             sub = sum(x['total'] for x in itms)
                             amt = sub * 1.10
                     except: amt = 0.0
                     
                     with st.expander(f"{r.get('created_at','?')} | {r.get('client_name','?')} | ${amt:,.2f}"):
                         c1, c2, c3 = st.columns(3)
+                        
+                        # PDF Button with Error Catching
                         try:
                             pdf = create_pdf(r)
                             c1.download_button("📩 PDF", pdf, f"Quote_{r.get('quote_id','?')}.pdf", "application/pdf")
-                        except: c1.error("Error generating PDF")
+                        except Exception as e: c1.error(f"PDF Error: {str(e)}")
+                        
                         if c2.button("✏️ Edit", key=f"e_{r.get('quote_id',i)}"):
                             try:
                                 st.session_state['quote_items'] = normalize_items(json.loads(r['items_json']))
@@ -425,6 +442,7 @@ def main_app():
                                 st.session_state['q_phone_input'] = r.get('client_phone', '')
                                 st.toast("Loaded!"); time.sleep(1)
                             except: st.error("Corrupt Data")
+                        
                         if c3.button("🗑️ Delete", key=f"d_{r.get('quote_id',i)}"):
                             dm.delete_quote(r.get('quote_id'), st.session_state['user']); st.rerun()
             else: st.info("Empty or Database Error (Check Header Names)")
