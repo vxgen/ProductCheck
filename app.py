@@ -16,7 +16,7 @@ def safe_float(val):
     """Safely converts string to float, handling symbols and empty values."""
     try:
         clean = str(val).replace('$', '').replace(',', '').strip()
-        if not clean: return 0.0
+        if not clean or clean.lower() == 'none' or clean.lower() == 'nan': return 0.0
         return float(clean)
     except:
         return 0.0
@@ -27,7 +27,7 @@ def normalize_items(items):
     for item in items:
         n = item.copy()
         n['qty'] = safe_float(n.get('qty', 1))
-        if n['qty'] == 0: n['qty'] = 1.0 # Default to 1 if 0 or fail
+        if n['qty'] == 0: n['qty'] = 1.0
         
         n['price'] = safe_float(n.get('price', 0))
         n['discount_val'] = safe_float(n.get('discount_val', 0))
@@ -44,19 +44,14 @@ def normalize_items(items):
     return clean
 
 def generate_search_labels(df):
-    """Generates the 'Long String' labels for searching."""
     if df.empty: return df, None
-    
     def col_ok(d, c): return not d[c].astype(str).str.strip().eq('').all()
     valid_cols = [c for c in df.columns if col_ok(df, c)]
     if not valid_cols: return df, None
-    
     name_col = valid_cols[0]
     for c in valid_cols:
         if 'product' in c.lower() or 'model' in c.lower(): name_col = c; break
-        
     forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp', 'margin']
-    
     def mk_lbl(row):
         m = str(row[name_col]) if pd.notnull(row[name_col]) else ""
         if m.lower() in ['nan','', 'none']: return None
@@ -64,102 +59,81 @@ def generate_search_labels(df):
         for c in valid_cols:
             if c != name_col and not any(k in c.lower() for k in forbidden):
                 v = str(row[c]).strip()
-                if v and v.lower() not in ['nan', 'none', '']: 
-                    parts.append(v)
+                if v and v.lower() not in ['nan', 'none', '']: parts.append(v)
         return " | ".join(filter(None, parts))
-
     df['Search_Label'] = df.apply(mk_lbl, axis=1)
     return df, name_col
 
 def extract_product_data(label, df_with_labels, name_col):
-    """Parses a Long Label back into Name, Desc, Price."""
     if not label or df_with_labels.empty: return None
-    
     match = df_with_labels[df_with_labels['Search_Label'] == label]
     if match.empty: return None
     row = match.iloc[0]
-    
     p_name = str(row[name_col])
-    
-    # Safe Price Extraction
     p_price = 0.0
     p_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
     for pc in p_cols:
-        val = safe_float(row[pc])
-        if val > 0: 
-            p_price = val; break
-        
+        try:
+            val = str(row[pc]).replace('A$', '').replace('$', '').replace(',', '').strip()
+            if val and val.lower() != 'nan': p_price = float(val); break
+        except: continue
     p_desc = ""
     d_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['long description', 'description', 'specs', 'detail'])]
     for dc in d_cols:
         val = str(row[dc])
-        if val and val.lower() not in ['nan', 'none', '']:
-            p_desc = val; break
-            
+        if val and val.lower() not in ['nan', 'none', '']: p_desc = val; break
     if not p_desc:
         parts = []
         forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp', 'margin', 'search_label']
         for c in df_with_labels.columns:
             if c == name_col or any(k in c.lower() for k in forbidden): continue
             v = str(row[c]).strip()
-            if v and v.lower() not in ['nan', 'none', '']:
-                parts.append(f"{c}: {v}")
+            if v and v.lower() not in ['nan', 'none', '']: parts.append(f"{c}: {v}")
         p_desc = " | ".join(parts)
-
     return {"name": p_name, "desc": p_desc, "price": p_price}
 
 # --- 2. CALLBACKS ---
 
 def on_product_search_change():
-    """Section 2 Callback"""
     lbl = st.session_state.get("q_search_product")
     if lbl:
         try:
             df = dm.get_all_products_df()
             df_lbl, name_col = generate_search_labels(df)
             data = extract_product_data(lbl, df_lbl, name_col)
-            
             if data:
                 st.session_state['input_name'] = data['name']
                 st.session_state['input_desc'] = data['desc']
                 st.session_state['input_price'] = data['price']
                 st.session_state['input_qty'] = 1.0
-        except Exception as e: print(e)
+        except: pass
 
 def add_line_item_callback():
-    """Section 2 Button Callback"""
     name = st.session_state.get('input_name', '')
-    if not name:
-        st.toast("Name required!", icon="⚠️"); return
-
+    if not name: st.toast("Name required!", icon="⚠️"); return
     item = {
-        "name": name,
-        "desc": st.session_state.get('input_desc', ''),
+        "name": name, "desc": st.session_state.get('input_desc', ''),
         "qty": st.session_state.get('input_qty', 1.0),
         "price": st.session_state.get('input_price', 0.0),
         "discount_val": st.session_state.get('input_disc_val', 0.0),
         "discount_type": st.session_state.get('input_disc_type', '%'),
         "total": 0
     }
-    
     if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
     st.session_state['quote_items'].append(item)
-    
     st.session_state['input_name'] = ""; st.session_state['input_desc'] = ""
     st.session_state['input_price'] = 0.0; st.session_state['input_qty'] = 1.0
     st.session_state['q_search_product'] = None
     st.toast("Item Added!")
 
 def save_quote_callback():
-    """SAFE SAVE: Runs before render."""
-    if not st.session_state.get("q_client_input"):
-        st.toast("Client Name Required!", icon="⚠️"); return
-
+    if not st.session_state.get("q_client_input"): st.toast("Client Name Required!", icon="⚠️"); return
     items = st.session_state.get('quote_items', [])
-    if not items:
-        st.toast("No items to save!", icon="⚠️"); return
-        
-    sub_ex = sum(i.get('total', 0) for i in items)
+    if not items: st.toast("No items to save!", icon="⚠️"); return
+    
+    # Recalculate accurately before save
+    items = normalize_items(items)
+    sub_ex = sum(i['total'] for i in items)
     grand_total = sub_ex * 1.10
     
     payload = {
@@ -170,9 +144,7 @@ def save_quote_callback():
         "expiration_date": str(st.session_state.get("q_expire_input")),
         "items": items
     }
-    
     dm.save_quote(payload, st.session_state['user'])
-    
     st.session_state['quote_items'] = []
     st.session_state['input_name'] = ""
     st.toast("Quote Saved!", icon="✅")
@@ -190,7 +162,6 @@ class QuotePDF(FPDF):
 def create_pdf(quote_row):
     pdf = QuotePDF(); pdf.add_page(); pdf.set_auto_page_break(True, 15)
     items = normalize_items(json.loads(quote_row['items_json']))
-    
     c_name = quote_row['client_name']
     c_email = quote_row.get('client_email', '')
     c_phone = str(quote_row.get('client_phone', '')) 
@@ -210,7 +181,6 @@ def create_pdf(quote_row):
     pdf.set_x(rx); pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, exp, 0, 1)
     pdf.set_x(rx); pdf.cell(30, 6, "Currency:", 0, 0); pdf.cell(30, 6, "AUD", 0, 1)
     pdf.ln(10)
-    
     ys = pdf.get_y()
     pdf.set_font('Arial', 'B', 11); pdf.cell(90, 6, "Seller", 0, 1)
     pdf.set_font('Arial', '', 10)
@@ -218,7 +188,6 @@ def create_pdf(quote_row):
     pdf.cell(90, 5, "Suite 304, Level 3, 63-79 Parramatta Rd", 0, 1)
     pdf.cell(90, 5, "Silverwater, NSW 2128, Australia", 0, 1)
     pdf.cell(90, 5, "Contact: Vincent Xu (vincentxu@msi.com)", 0, 1)
-    
     pdf.set_xy(110, ys)
     pdf.set_font('Arial', 'B', 11); pdf.cell(80, 6, "Buyer", 0, 1)
     pdf.set_x(110); pdf.set_font('Arial', '', 10)
@@ -226,13 +195,11 @@ def create_pdf(quote_row):
     pdf.set_x(110); pdf.cell(80, 5, f"Email: {c_email}", 0, 1)
     if c_phone: pdf.set_x(110); pdf.cell(80, 5, f"Phone: {c_phone}", 0, 1)
     pdf.ln(15)
-    
     pdf.set_font('Arial', 'B', 12); pdf.cell(0, 10, "Line Items", 0, 1)
     pdf.set_font('Arial', 'B', 9); pdf.set_fill_color(245, 245, 245)
     pdf.cell(85, 8, "Item", 1, 0, 'L', True); pdf.cell(15, 8, "Qty", 1, 0, 'C', True)
     pdf.cell(25, 8, "Unit Price", 1, 0, 'R', True); pdf.cell(30, 8, "Discount", 1, 0, 'R', True)
     pdf.cell(35, 8, "Net Total", 1, 1, 'R', True)
-    
     pdf.set_font('Arial', '', 9)
     for i in items:
         nm = i['name'][:42]+"..." if len(i['name'])>45 else i['name']
@@ -266,10 +233,8 @@ def check_login(u, p):
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
-# KEY FOR TABLE RESET
 if 'table_key_id' not in st.session_state: st.session_state['table_key_id'] = 0
 
-# Init Inputs
 if 'input_name' not in st.session_state: st.session_state['input_name'] = ""
 if 'input_desc' not in st.session_state: st.session_state['input_desc'] = ""
 if 'input_price' not in st.session_state: st.session_state['input_price'] = 0.0
@@ -289,7 +254,6 @@ def main_app():
     if st.sidebar.button("Logout"): st.session_state['logged_in'] = False; st.rerun()
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Quote Generator", "Upload (Direct)", "Data Update (Direct)"])
     
-    # 1. SEARCH
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search")
         if st.button("Refresh"): dm.get_all_products_df.clear(); st.rerun()
@@ -301,14 +265,11 @@ def main_app():
             if not df.empty:
                 df_lbl, name_col = generate_search_labels(df)
                 if df_lbl.empty: st.warning("No valid data"); st.stop()
-                
                 df_lbl = df_lbl.dropna(subset=['Search_Label'])
                 opts = sorted(df_lbl['Search_Label'].unique().tolist())
-                
                 c1, c2 = st.columns([8, 1])
                 sel = c1.selectbox("Search", opts, index=None, key="s_main")
                 if c2.button("Clear"): st.session_state["s_main"] = None; st.rerun()
-                
                 if sel:
                     st.divider()
                     res = df_lbl[df_lbl['Search_Label'] == sel]
@@ -335,16 +296,12 @@ def main_app():
                     cd = df[df['category'] == cs]
                     st.dataframe(cd, use_container_width=True)
 
-    # 2. QUOTE
     elif menu == "Quote Generator":
         st.header("📝 Quotes")
         tab_create, tab_hist = st.tabs(["Create Quote", "History"])
-        
         with tab_create:
             try: df = dm.get_all_products_df()
             except: df = pd.DataFrame()
-            
-            # Prepare Labels
             search_opts = []
             df_lbl = pd.DataFrame()
             name_col = None
@@ -354,7 +311,6 @@ def main_app():
                     df_lbl = df_lbl.dropna(subset=['Search_Label'])
                     search_opts = sorted(df_lbl['Search_Label'].unique().tolist())
 
-            # 1. CLIENT
             st.subheader("1. Client Details")
             with st.container(border=True):
                 c1, c2, c3 = st.columns(3)
@@ -364,17 +320,10 @@ def main_app():
                 c4, c5 = st.columns(2)
                 q_date = c4.date_input("Date", date.today(), key="q_date_input")
                 q_expire = c5.date_input("Expires", date.today(), key="q_expire_input")
-
             st.divider()
 
-            # 2. ADD ITEM (SECTION 2)
             st.subheader("2. Add Line Item")
-            
-            st.selectbox(
-                "Search Database (Auto-fill)", options=search_opts, index=None, 
-                key="q_search_product", on_change=on_product_search_change
-            )
-
+            st.selectbox("Search Database (Auto-fill)", options=search_opts, index=None, key="q_search_product", on_change=on_product_search_change)
             with st.container(border=True):
                 c1, c2 = st.columns([1, 2])
                 c1.text_input("Product Name", key="input_name")
@@ -385,26 +334,17 @@ def main_app():
                 c5.number_input("Discount", 0.0, key="input_disc_val")
                 c6.selectbox("Type", ["%", "$"], key="input_disc_type")
                 st.button("➕ Add Line Item", on_click=add_line_item_callback)
-
             st.divider()
             
-            # 3. REVIEW (SECTION 3)
             st.subheader("3. Review Items")
-            
             if st.session_state['quote_items']:
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
-                
                 curr_names = q_df['name'].unique().tolist()
                 comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
-                
                 dyn_key = f"q_table_{st.session_state['table_key_id']}"
-                
                 edited = st.data_editor(
-                    q_df,
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    key=dyn_key,
+                    q_df, num_rows="dynamic", use_container_width=True, key=dyn_key,
                     column_config={
                         "name": st.column_config.SelectboxColumn("Item (Select to Auto-fill)", options=comb_opts, required=True, width="large"),
                         "desc": st.column_config.TextColumn("Description", width="medium"),
@@ -415,40 +355,25 @@ def main_app():
                         "total": st.column_config.NumberColumn("Net", format="$%.2f", disabled=True)
                     }
                 )
-                
-                # --- AUTO-DISTRIBUTE LOGIC ---
-                items_save = []; trigger_refresh = False
-                sub_ex = 0; tot_disc = 0
-                
+                items_save = []; trigger_refresh = False; sub_ex = 0; tot_disc = 0
                 for idx, row in edited.iterrows():
                     curr_name = str(row['name'])
-                    
                     if "|" in curr_name and curr_name in search_opts:
                         data = extract_product_data(curr_name, df_lbl, name_col)
                         if data:
-                            row['name'] = data['name']
-                            row['desc'] = data['desc']
-                            row['price'] = data['price']
-                            row['qty'] = 1.0
+                            row['name'] = data['name']; row['desc'] = data['desc']
+                            row['price'] = data['price']; row['qty'] = 1.0
                             trigger_refresh = True
-                    
-                    q = safe_float(row.get('qty', 1))
-                    p = safe_float(row.get('price', 0))
-                    d = safe_float(row.get('discount_val', 0))
-                    t = row.get('discount_type', '%')
-                    
+                    q = safe_float(row.get('qty', 1)); p = safe_float(row.get('price', 0))
+                    d = safe_float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
                     g = q * p
                     di = g * (d/100) if t == '%' else d
                     n = g - di
                     sub_ex += n; tot_disc += di
-                    
                     r = row.to_dict(); r['total'] = n
                     items_save.append(r)
-                
                 st.session_state['quote_items'] = items_save
-                if trigger_refresh:
-                    st.session_state['table_key_id'] += 1
-                    st.rerun()
+                if trigger_refresh: st.session_state['table_key_id'] += 1; st.rerun()
 
                 gst = sub_ex*0.10; grand = sub_ex+gst
                 m1, m2, m3, m4 = st.columns(4)
@@ -456,12 +381,8 @@ def main_app():
                 m2.metric("Total Discount", f"${tot_disc:,.2f}")
                 m3.metric("GST (10%)", f"${gst:,.2f}")
                 m4.metric("Grand Total", f"${grand:,.2f}")
-                
                 c_a1, c_a2 = st.columns([1, 4])
-                
-                # SAVE BUTTON (USES CALLBACK)
                 c_a1.button("💾 Save Quote", type="primary", on_click=save_quote_callback)
-                
                 if c_a2.button("Clear"): st.session_state['quote_items'] = []; st.rerun()
             else: st.info("No items.")
 
@@ -469,31 +390,45 @@ def main_app():
             st.subheader("📜 History")
             if st.button("Refresh"): dm.get_quotes.clear(); st.rerun()
             hist = dm.get_quotes()
+            
             if not hist.empty:
-                # FIX: Use safe_float for sort/display to prevent crashes
-                hist['sort_amt'] = hist['total_amount'].apply(lambda x: safe_float(x))
-                hist = hist.sort_values(by="created_at", ascending=False)
+                # Cleanup Headers: Strip whitespace to match key
+                hist.columns = [c.strip() for c in hist.columns]
+                
+                # Sort if possible
+                if 'created_at' in hist.columns:
+                    hist = hist.sort_values(by="created_at", ascending=False)
                 
                 for i, r in hist.iterrows():
-                    amt = safe_float(r['total_amount'])
-                    with st.expander(f"{r['created_at']} | {r['client_name']} | ${amt:,.2f}"):
+                    # FALLBACK CALCULATION
+                    try:
+                        amt = safe_float(r.get('total_amount', 0))
+                        # If main total is 0, try to recalc from items
+                        if amt == 0 and 'items_json' in r:
+                            itms = json.loads(r['items_json'])
+                            itms = normalize_items(itms)
+                            sub = sum(x['total'] for x in itms)
+                            amt = sub * 1.10
+                    except: amt = 0.0
+                    
+                    with st.expander(f"{r.get('created_at','?')} | {r.get('client_name','?')} | ${amt:,.2f}"):
                         c1, c2, c3 = st.columns(3)
                         try:
                             pdf = create_pdf(r)
-                            c1.download_button("📩 PDF", pdf, f"Quote_{r['quote_id']}.pdf", "application/pdf")
-                        except: c1.error("Error")
-                        if c2.button("✏️ Edit", key=f"e_{r['quote_id']}"):
-                            st.session_state['quote_items'] = normalize_items(json.loads(r['items_json']))
-                            st.session_state['q_client_input'] = r['client_name']
-                            st.session_state['q_email_input'] = r.get('client_email', '')
-                            try: st.session_state['q_phone_input'] = r.get('client_phone', '')
-                            except: pass
-                            st.toast("Loaded!"); time.sleep(1)
-                        if c3.button("🗑️ Delete", key=f"d_{r['quote_id']}"):
-                            dm.delete_quote(r['quote_id'], st.session_state['user']); st.rerun()
-            else: st.info("Empty")
+                            c1.download_button("📩 PDF", pdf, f"Quote_{r.get('quote_id','?')}.pdf", "application/pdf")
+                        except: c1.error("Error generating PDF")
+                        if c2.button("✏️ Edit", key=f"e_{r.get('quote_id',i)}"):
+                            try:
+                                st.session_state['quote_items'] = normalize_items(json.loads(r['items_json']))
+                                st.session_state['q_client_input'] = r.get('client_name', '')
+                                st.session_state['q_email_input'] = r.get('client_email', '')
+                                st.session_state['q_phone_input'] = r.get('client_phone', '')
+                                st.toast("Loaded!"); time.sleep(1)
+                            except: st.error("Corrupt Data")
+                        if c3.button("🗑️ Delete", key=f"d_{r.get('quote_id',i)}"):
+                            dm.delete_quote(r.get('quote_id'), st.session_state['user']); st.rerun()
+            else: st.info("Empty or Database Error (Check Header Names)")
 
-    # 3. UPLOAD (Same)
     elif menu == "Upload (Direct)":
         st.header("📂 Upload"); c1, c2 = st.columns(2)
         with c1: cats = dm.get_categories(); cs = st.selectbox("Cat", cats if cats else ["Default"])
@@ -511,7 +446,6 @@ def main_app():
                         st.success("Saved"); time.sleep(1); st.rerun()
                     except Exception as e: st.error(str(e))
 
-    # 4. UPDATE (Same)
     elif menu == "Data Update (Direct)":
         st.header("🔄 Update"); cats = dm.get_categories(); cs = st.selectbox("Cat", cats)
         up = st.file_uploader("File"); hh = st.checkbox("Headers?", True, key="uph")
