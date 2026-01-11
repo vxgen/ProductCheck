@@ -67,15 +67,20 @@ def get_all_products_df():
     final_df = final_df.dropna(axis=1, how='all')
     return final_df
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5) # Short TTL for quote history
 def get_quotes():
     """Fetches all quotes from the 'quotes' sheet."""
+    # NO TRY/EXCEPT HERE -> Show the error if it fails!
     try:
         ws = get_sheet().worksheet("quotes")
         records = ws.get_all_records()
         if not records: return pd.DataFrame()
         return pd.DataFrame(records)
-    except:
+    except gspread.WorksheetNotFound:
+        return pd.DataFrame() # Return empty if sheet doesn't exist yet
+    except Exception as e:
+        # This will print the error to the app so we can debug
+        st.error(f"Error fetching Quote History: {str(e)}")
         return pd.DataFrame()
 
 # --- WRITE FUNCTIONS ---
@@ -148,6 +153,7 @@ def save_products_dynamic(df, category, user):
 
 def update_products_dynamic(new_df, category, user, key_column):
     ws = ensure_category_sheet_exists(category)
+    
     try:
         data = ws.get_all_values()
         if data and len(data) > 1:
@@ -163,8 +169,10 @@ def update_products_dynamic(new_df, category, user, key_column):
     if not current_df.empty and key_column in current_df.columns and key_column in new_df.columns:
         current_keys = set(current_df[key_column].astype(str))
         new_keys = set(new_df[key_column].astype(str))
+        
         eol_keys = current_keys - new_keys
         to_add_keys = new_keys - current_keys
+        
         eol_count = len(eol_keys)
         new_count = len(to_add_keys)
         
@@ -198,22 +206,24 @@ def save_quote(quote_data, user):
     try:
         ws = sh.worksheet("quotes")
     except:
-        ws = sh.add_worksheet(title="quotes", rows=1000, cols=13)
+        ws = sh.add_worksheet(title="quotes", rows=1000, cols=15)
+        # HEADER ROW - Defines the schema
         ws.append_row([
             "quote_id", "created_at", "created_by", 
-            "client_name", "client_email", "client_phone", "status", 
-            "total_amount", "items_json", "expiration_date"
+            "client_name", "client_email", "client_phone",  # Added Phone Header
+            "status", "total_amount", "items_json", "expiration_date"
         ])
     
     quote_id = f"Q-{int(time.time())}"
     
+    # Ensure the row matches the header order above
     row = [
         quote_id,
         str(datetime.now()),
         user,
         quote_data.get("client_name", ""),
         quote_data.get("client_email", ""),
-        quote_data.get("client_phone", ""), # Added Phone
+        quote_data.get("client_phone", ""), # Save Phone
         "Draft",
         quote_data.get("total_amount", 0),
         json.dumps(quote_data.get("items", [])),
@@ -230,7 +240,6 @@ def delete_quote(quote_id, user):
         ws = get_sheet().worksheet("quotes")
         data = ws.get_all_values()
         if not data: return False
-        
         headers = data[0]
         try: idx = headers.index("quote_id")
         except: return False
