@@ -10,8 +10,7 @@ import time
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
-# --- 1. HELPERS ---
-
+# --- HELPERS ---
 def safe_float(val):
     try:
         clean = str(val).replace('$', '').replace(',', '').strip()
@@ -42,6 +41,7 @@ def normalize_items(items):
         clean.append(n)
     return clean
 
+# --- SEARCH LOGIC ---
 def generate_search_labels(df):
     if df.empty: return df, None
     def col_ok(d, c): return not d[c].astype(str).str.strip().eq('').all()
@@ -89,8 +89,7 @@ def extract_product_data(label, df_with_labels, name_col):
         p_desc = " | ".join(parts)
     return {"name": p_name, "desc": p_desc, "price": p_price}
 
-# --- 2. CALLBACKS ---
-
+# --- CALLBACKS ---
 def on_search_change():
     lbl = st.session_state.get("q_search_product")
     if lbl:
@@ -118,8 +117,6 @@ def add_item_cb():
     }
     if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
     st.session_state['quote_items'].append(item)
-    
-    # Clear inputs
     st.session_state['input_name'] = ""
     st.session_state['input_desc'] = ""
     st.session_state['input_price'] = 0.0
@@ -132,7 +129,6 @@ def save_quote_cb():
     if not items: st.toast("No items!", icon="⚠️"); return
     
     items = normalize_items(items)
-    # Total calculation logic
     total = sum(i['total'] for i in items) * 1.10
     
     payload = {
@@ -148,7 +144,7 @@ def save_quote_cb():
     st.session_state['input_name'] = ""
     st.toast("Quote Saved!", icon="✅")
 
-# --- 3. PDF ENGINE ---
+# --- PDF ---
 class QuotePDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 20); self.cell(80, 10, 'MSI', 0, 0, 'L') 
@@ -170,11 +166,11 @@ def create_pdf(quote_row):
     qid = sanitize_text(str(quote_row.get('quote_id', '')))
     dt = str(quote_row.get('created_at', ''))[:10]
     exp = str(quote_row.get('expiration_date', ''))
+    if not exp or exp == 'nan': exp = "N/A"
     
     sub = sum(i['total'] for i in items)
     gst = sub * 0.10; grand = sub + gst
     
-    # Header
     pdf.set_font('Arial', '', 10); rx = 130
     pdf.set_xy(rx, 20); pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, qid, 0, 1)
     pdf.set_x(rx); pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, dt, 0, 1)
@@ -198,88 +194,89 @@ def create_pdf(quote_row):
     if c_phone and c_phone != 'nan': pdf.set_x(110); pdf.cell(80, 5, f"Phone: {c_phone}", 0, 1)
     pdf.ln(15)
     
-    # Table Header
     pdf.set_font('Arial', 'B', 10); pdf.set_fill_color(240, 240, 240)
     pdf.cell(90, 8, "Item", 1, 0, 'L', True); pdf.cell(15, 8, "Qty", 1, 0, 'C', True)
     pdf.cell(25, 8, "Price", 1, 0, 'R', True); pdf.cell(30, 8, "Disc", 1, 0, 'R', True)
     pdf.cell(30, 8, "Total", 1, 1, 'R', True)
     
     pdf.set_font('Arial', '', 9)
-    for i in items:
-        nm = sanitize_text(i['name'])
-        if len(nm)>50: nm = nm[:47]+"..."
-        ds = f"{i['discount_val']}%" if i['discount_type']=='%' else f"${i['discount_val']}"
-        pdf.cell(90, 8, nm, 1, 0, 'L')
-        pdf.cell(15, 8, str(int(i['qty'])), 1, 0, 'C')
-        pdf.cell(25, 8, f"${i['price']:,.2f}", 1, 0, 'R')
-        pdf.cell(30, 8, ds, 1, 0, 'R')
-        pdf.cell(30, 8, f"${i['total']:,.2f}", 1, 1, 'R')
-        d_txt = sanitize_text(i['desc'])
-        if d_txt:
-            pdf.set_font('Arial', 'I', 8)
-            pdf.cell(190, 6, f"   {d_txt[:100]}", 'L', 1, 'L')
-            pdf.set_font('Arial', '', 9)
+    if not items:
+        pdf.cell(190, 10, "No items found", 1, 1, 'C')
+    else:
+        for i in items:
+            nm = sanitize_text(i['name'])[:50]
+            ds = f"{i['discount_val']}%" if i['discount_type']=='%' else f"${i['discount_val']}"
+            pdf.cell(90, 8, nm, 1, 0, 'L')
+            pdf.cell(15, 8, str(int(i['qty'])), 1, 0, 'C')
+            pdf.cell(25, 8, f"${i['price']:,.2f}", 1, 0, 'R')
+            pdf.cell(30, 8, ds, 1, 0, 'R')
+            pdf.cell(30, 8, f"${i['total']:,.2f}", 1, 1, 'R')
+            
+            d_txt = sanitize_text(i['desc'])
+            if d_txt:
+                pdf.set_font('Arial', 'I', 8)
+                pdf.cell(190, 6, f"   {d_txt[:100]}", 'L', 1, 'L')
+                pdf.set_font('Arial', '', 9)
 
     pdf.ln(5)
     pdf.set_x(130); pdf.cell(30, 6, "Subtotal:", 0, 0, 'R'); pdf.cell(30, 6, f"${sub:,.2f}", 0, 1, 'R')
     pdf.set_x(130); pdf.cell(30, 6, "GST (10%):", 0, 0, 'R'); pdf.cell(30, 6, f"${gst:,.2f}", 0, 1, 'R')
     pdf.set_font('Arial', 'B', 10)
     pdf.set_x(130); pdf.cell(30, 8, "Total:", 0, 0, 'R'); pdf.cell(30, 8, f"${grand:,.2f}", 0, 1, 'R')
+    
     return pdf.output(dest='S').encode('latin-1')
 
-# --- MAIN APP ---
+# --- MAIN ---
 def main_app():
     st.sidebar.title(f"User: {st.session_state['user']}")
     if st.sidebar.button("Logout"): st.session_state['logged_in'] = False; st.rerun()
-    menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Quote Generator", "Data Admin"])
+    menu = st.sidebar.radio("Navigate", ["Product Search", "Quote Generator", "Data Admin"])
     
-    if menu == "Product Search & Browse":
-        st.header("🔎 Product Search")
+    if menu == "Product Search":
+        st.header("🔎 Search")
         if st.button("Refresh DB"): dm.get_all_products_df.clear(); st.rerun()
         try: df = dm.get_all_products_df()
         except: df = pd.DataFrame()
         
-        tab1, tab2 = st.tabs(["Search", "Browse"])
+        t1, t2 = st.tabs(["Search", "Browse"])
         
-        with tab1:
+        with t1:
             if not df.empty:
                 df_lbl, name_col = generate_search_labels(df)
-                if df_lbl.empty: st.warning("No data"); st.stop()
-                opts = sorted(df_lbl['Search_Label'].dropna().unique().tolist())
-                sel = st.selectbox("Search Product", opts, index=None, key="s_main")
-                if sel:
-                    st.divider()
-                    res = df_lbl[df_lbl['Search_Label'] == sel]
-                    for i, r in res.iterrows():
-                        with st.expander(f"📦 {r[name_col]}", expanded=True):
-                            # HIDDEN PRICE LOGIC
-                            price_cols = [c for c in res.columns if any(x in c.lower() for x in ['price', 'cost', 'srp', 'msrp'])]
-                            public_cols = [c for c in res.columns if c not in price_cols and c != 'Search_Label']
-                            
-                            for c in public_cols:
-                                st.write(f"**{c}:** {r[c]}")
-                            
-                            st.markdown("---")
-                            # RESTORED TOGGLE
-                            if st.toggle("Show Price", key=f"p_toggle_{i}"):
-                                for pc in price_cols:
-                                    st.metric(pc, f"{r[pc]}")
+                if df_lbl.empty: st.warning("No data")
+                else:
+                    opts = sorted(df_lbl['Search_Label'].dropna().unique().tolist())
+                    sel = st.selectbox("Search", opts, index=None, key="s_main")
+                    if sel:
+                        st.divider()
+                        res = df_lbl[df_lbl['Search_Label'] == sel]
+                        for i, r in res.iterrows():
+                            with st.expander(f"📦 {r[name_col]}", expanded=True):
+                                # RESTORED: Hide price columns unless toggled
+                                price_cols = [c for c in res.columns if any(x in c.lower() for x in ['price', 'cost', 'srp', 'msrp'])]
+                                pub_cols = [c for c in res.columns if c not in price_cols and c != 'Search_Label']
+                                
+                                for c in pub_cols:
+                                    st.write(f"**{c}:** {r[c]}")
+                                
+                                if price_cols:
+                                    st.markdown("---")
+                                    if st.toggle("Show Prices", key=f"t_{i}"):
+                                        for pc in price_cols: st.metric(pc, f"{r[pc]}")
 
-        with tab2:
+        with t2:
             cats = dm.get_categories()
             if cats:
                 cs = st.selectbox("Category", cats)
                 if not df.empty and 'category' in df.columns:
                     cd = df[df['category'] == cs]
-                    # HIDDEN PRICE LOGIC FOR BROWSE
-                    show_p = st.toggle("Show Prices in Table", key="browse_toggle")
-                    if not show_p:
-                        # Drop price columns
+                    # RESTORED: Toggle for Table
+                    if st.toggle("Show Prices in Table", key="t_browse"):
+                        st.dataframe(cd, use_container_width=True)
+                    else:
                         bad = ['price', 'cost', 'srp', 'msrp']
                         cols = [c for c in cd.columns if not any(x in c.lower() for x in bad)]
                         st.dataframe(cd[cols], use_container_width=True)
-                    else:
-                        st.dataframe(cd, use_container_width=True)
 
     elif menu == "Quote Generator":
         st.header("📝 Quotes")
@@ -322,35 +319,49 @@ def main_app():
             if st.session_state['quote_items']:
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
+                curr_names = q_df['name'].unique().tolist()
+                comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
                 
-                # Simple Editor - No fancy "Auto-fill" logic that breaks things
+                # Dynamic Table Key
+                if 'table_key' not in st.session_state: st.session_state['table_key'] = 0
+                
                 edited = st.data_editor(
-                    q_df, num_rows="dynamic", use_container_width=True, key="simple_editor",
+                    q_df, num_rows="dynamic", use_container_width=True, key=f"tbl_{st.session_state['table_key']}",
                     column_config={
-                        "name": st.column_config.TextColumn("Item", width="large"),
+                        "name": st.column_config.SelectboxColumn("Item", options=comb_opts, width="large"),
                         "total": st.column_config.NumberColumn("Net", disabled=True)
                     }
                 )
                 
-                items_save = []
+                # Auto-fill Intercept
+                new_items = []; trigger = False
                 for idx, row in edited.iterrows():
+                    nm = str(row['name'])
+                    if "|" in nm and nm in search_opts:
+                        d = extract_product_data(nm, df_lbl, name_col)
+                        if d:
+                            row['name'] = d['name']; row['desc'] = d['desc']
+                            row['price'] = d['price']; row['qty'] = 1.0
+                            trigger = True
+                    
                     q = safe_float(row.get('qty', 1)); p = safe_float(row.get('price', 0))
                     d = safe_float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
                     g = q*p; di = g*(d/100) if t=='%' else d
                     row['total'] = g - di
-                    items_save.append(row.to_dict())
+                    new_items.append(row.to_dict())
                 
-                st.session_state['quote_items'] = items_save # Save for button click
+                st.session_state['quote_items'] = new_items
+                if trigger: 
+                    st.session_state['table_key'] += 1
+                    st.rerun()
 
-                sub = sum(i['total'] for i in items_save); gst = sub*0.1; grand = sub+gst
+                sub = sum(i['total'] for i in new_items); gst = sub*0.1; grand = sub+gst
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Subtotal", f"${sub:,.2f}")
                 c2.metric("GST", f"${gst:,.2f}")
                 c3.metric("Grand Total", f"${grand:,.2f}")
                 
-                c_a1, c_a2 = st.columns([1, 4])
-                c_a1.button("💾 Save Quote", type="primary", on_click=save_quote_cb)
-                if c_a2.button("Clear"): st.session_state['quote_items'] = []; st.rerun()
+                st.button("💾 Save Quote", type="primary", on_click=save_quote_cb)
             else: st.info("Empty")
 
         with t2:
@@ -362,7 +373,6 @@ def main_app():
                 if 'created_at' in hist.columns: hist = hist.sort_values('created_at', ascending=False)
                 
                 for i, r in hist.iterrows():
-                    # Recalculate Total if Missing
                     try:
                         amt = safe_float(r.get('total_amount', 0))
                         if amt == 0 and 'items_json' in r:
@@ -376,7 +386,7 @@ def main_app():
                             st.download_button("📩 Download PDF", pdf_data, f"Quote.pdf", "application/pdf")
                         except Exception as e: st.error(f"PDF Error: {e}")
                         
-                        # RESTORED EDIT FUNCTIONALITY
+                        # EDIT RESTORED
                         if st.button("✏️ Edit", key=f"e_{i}"):
                             try:
                                 st.session_state['quote_items'] = normalize_items(json.loads(r['items_json']))
@@ -384,7 +394,7 @@ def main_app():
                                 st.session_state['q_email_input'] = r.get('client_email', '')
                                 st.session_state['q_phone_input'] = r.get('client_phone', '')
                                 st.toast("Loaded into Generator!"); time.sleep(1)
-                            except: st.error("Corrupt Data")
+                            except: st.error("Data Error")
                         
                         if st.button("Delete", key=f"d_{i}"):
                             dm.delete_quote(r.get('quote_id'), st.session_state['user'])
