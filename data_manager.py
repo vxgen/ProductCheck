@@ -16,6 +16,7 @@ def get_client():
 
 def get_sheet():
     client = get_client()
+    # REPLACE WITH YOUR SHEET URL
     url = "https://docs.google.com/spreadsheets/d/1KG8qWTYLa6GEWByYIg2vz3bHrGdW3gvqD_detwhyj7k/edit"
     return client.open_by_url(url)
 
@@ -64,7 +65,9 @@ def get_quotes():
         headers = data[0]
         rows = data[1:]
         
-        # Safe dataframe creation
+        # Ensure we have data
+        if not rows: return pd.DataFrame(columns=headers)
+
         df = pd.DataFrame(rows, columns=headers)
         return df
     except:
@@ -95,7 +98,6 @@ def add_category(name, user):
     if name not in existing:
         ws.append_row([name, user, str(datetime.now())])
     
-    # Ensure product sheet exists
     try: get_sheet().worksheet(name)
     except: get_sheet().add_worksheet(name, 1000, 26)
     get_categories.clear()
@@ -110,18 +112,17 @@ def save_products_dynamic(df, category, user):
     get_all_products_df.clear()
 
 def update_products_dynamic(new_df, category, user, key_col):
-    # (Simplified for brevity, logic remains same as previous working versions)
     save_products_dynamic(new_df, category, user)
     return {"new": len(new_df), "eol": 0, "total": len(new_df)}
 
-# --- QUOTE SAVE (FIXED ORDER) ---
+# --- QUOTE SAVE (FIXED) ---
 def save_quote(quote_data, user):
     sh = get_sheet()
     try:
         ws = sh.worksheet("quotes")
     except:
-        # Create correct schema if missing
         ws = sh.add_worksheet(title="quotes", rows=1000, cols=15)
+        # DEFINE CORRECT HEADERS
         ws.append_row([
             "quote_id", "created_at", "created_by", 
             "client_name", "client_email", "client_phone", 
@@ -130,7 +131,7 @@ def save_quote(quote_data, user):
     
     quote_id = f"Q-{int(time.time())}"
     
-    # STRICT COLUMN ORDER matching header above
+    # WRITE DATA IN EXACT ORDER OF HEADERS
     row = [
         quote_id,
         str(datetime.now()),
