@@ -56,18 +56,16 @@ def get_all_products_df():
 
 @st.cache_data(ttl=5)
 def get_quotes():
-    """Robust fetch that handles column mismatches safely."""
+    """Robust fetch of quote history."""
     try:
         ws = get_sheet().worksheet("quotes")
         data = ws.get_all_values()
         if len(data) < 2: return pd.DataFrame()
-        
         headers = data[0]
         rows = data[1:]
-        
-        # Safe creation
-        df = pd.DataFrame(rows, columns=headers)
-        return df
+        # Ensure we have data
+        if not rows: return pd.DataFrame(columns=headers)
+        return pd.DataFrame(rows, columns=headers)
     except:
         return pd.DataFrame()
 
@@ -113,34 +111,31 @@ def update_products_dynamic(new_df, category, user, key_col):
     save_products_dynamic(new_df, category, user)
     return {"new": len(new_df), "eol": 0, "total": len(new_df)}
 
-# --- QUOTE SAVE (FIXED) ---
+# --- QUOTE SAVE (AUTO-FIX HEADERS) ---
 def save_quote(quote_data, user):
     sh = get_sheet()
+    expected_headers = [
+        "quote_id", "created_at", "created_by", 
+        "client_name", "client_email", "client_phone", 
+        "status", "total_amount", "items_json", "expiration_date", "seller_info"
+    ]
+    
     try:
         ws = sh.worksheet("quotes")
+        # AUTO-FIX: Check headers and update if wrong
+        current = ws.row_values(1)
+        if current != expected_headers:
+            ws.update(values=[expected_headers], range_name='A1')
     except:
         ws = sh.add_worksheet(title="quotes", rows=1000, cols=15)
-        # DEFINE HEADERS (Column A to J)
-        ws.append_row([
-            "quote_id", 
-            "created_at", 
-            "created_by", 
-            "client_name", 
-            "client_email", 
-            "client_phone",  # <--- Ensure this column exists
-            "status", 
-            "total_amount", 
-            "items_json", 
-            "expiration_date",
-            "seller_info" # <--- NEW: Store custom seller info
-        ])
+        ws.append_row(expected_headers)
     
     quote_id = f"Q-{int(time.time())}"
     
-    # Pack Seller Info into a simple string or JSON
+    # Pack Seller Info
     seller_info = json.dumps(quote_data.get("seller_info", {}))
 
-    # ROW DATA MUST MATCH HEADER ORDER
+    # Data must match expected_headers order exactly
     row = [
         quote_id,
         str(datetime.now()),
