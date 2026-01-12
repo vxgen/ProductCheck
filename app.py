@@ -131,12 +131,20 @@ def save_quote_cb():
     items = normalize_items(items)
     total = sum(i['total'] for i in items) * 1.10
     
+    # Store Seller Info
+    seller_data = {
+        "name": st.session_state.get("s_name", ""),
+        "email": st.session_state.get("s_email", ""),
+        "phone": st.session_state.get("s_phone", "")
+    }
+
     payload = {
         "client_name": st.session_state.get("q_client_input"),
         "client_email": st.session_state.get("q_email_input"),
         "client_phone": st.session_state.get("q_phone_input"),
         "total_amount": total,
         "expiration_date": str(st.session_state.get("q_expire_input")),
+        "seller_info": seller_data,
         "items": items
     }
     dm.save_quote(payload, st.session_state['user'])
@@ -156,21 +164,33 @@ class QuotePDF(FPDF):
 def create_pdf(quote_row):
     pdf = QuotePDF(); pdf.add_page(); pdf.set_auto_page_break(True, 15)
     
+    # Parse Items
     raw_items = quote_row.get('items_json', '[]')
     try: items = normalize_items(json.loads(raw_items))
     except: items = []
     
+    # Parse Seller Info
+    try:
+        seller_info = json.loads(quote_row.get('seller_info', '{}'))
+    except:
+        seller_info = {}
+    
+    s_name = sanitize_text(seller_info.get("name", "MSI Australia"))
+    s_email = sanitize_text(seller_info.get("email", "vincentxu@msi.com"))
+    s_phone = sanitize_text(seller_info.get("phone", ""))
+    
+    # Client Info
     c_name = sanitize_text(quote_row.get('client_name', ''))
     c_email = sanitize_text(quote_row.get('client_email', ''))
     c_phone = sanitize_text(str(quote_row.get('client_phone', '')))
     qid = sanitize_text(str(quote_row.get('quote_id', '')))
     dt = str(quote_row.get('created_at', ''))[:10]
     exp = str(quote_row.get('expiration_date', ''))
-    if not exp or exp == 'nan': exp = "N/A"
     
     sub = sum(i['total'] for i in items)
     gst = sub * 0.10; grand = sub + gst
     
+    # Header
     pdf.set_font('Arial', '', 10); rx = 130
     pdf.set_xy(rx, 20); pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, qid, 0, 1)
     pdf.set_x(rx); pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, dt, 0, 1)
@@ -178,14 +198,21 @@ def create_pdf(quote_row):
     pdf.set_x(rx); pdf.cell(30, 6, "Currency:", 0, 0); pdf.cell(30, 6, "AUD", 0, 1)
     pdf.ln(10)
     
+    # Seller
     ys = pdf.get_y()
     pdf.set_font('Arial', 'B', 11); pdf.cell(90, 6, "Seller", 0, 1)
     pdf.set_font('Arial', '', 10)
-    pdf.cell(90, 5, "MSI Australia", 0, 1)
+    if s_name: pdf.cell(90, 5, s_name, 0, 1)
+    else: pdf.cell(90, 5, "MSI Australia", 0, 1) # Default
+    
     pdf.cell(90, 5, "Suite 304, Level 3, 63-79 Parramatta Rd", 0, 1)
     pdf.cell(90, 5, "Silverwater, NSW 2128, Australia", 0, 1)
-    pdf.cell(90, 5, "Contact: Vincent Xu (vincentxu@msi.com)", 0, 1)
     
+    contact_str = f"Email: {s_email}"
+    if s_phone: contact_str += f" | Phone: {s_phone}"
+    pdf.cell(90, 5, contact_str, 0, 1)
+    
+    # Buyer
     pdf.set_xy(110, ys)
     pdf.set_font('Arial', 'B', 11); pdf.cell(80, 6, "Buyer", 0, 1)
     pdf.set_x(110); pdf.set_font('Arial', '', 10)
@@ -194,6 +221,7 @@ def create_pdf(quote_row):
     if c_phone and c_phone != 'nan': pdf.set_x(110); pdf.cell(80, 5, f"Phone: {c_phone}", 0, 1)
     pdf.ln(15)
     
+    # Table
     pdf.set_font('Arial', 'B', 10); pdf.set_fill_color(240, 240, 240)
     pdf.cell(90, 8, "Item", 1, 0, 'L', True); pdf.cell(15, 8, "Qty", 1, 0, 'C', True)
     pdf.cell(25, 8, "Price", 1, 0, 'R', True); pdf.cell(30, 8, "Disc", 1, 0, 'R', True)
@@ -211,7 +239,6 @@ def create_pdf(quote_row):
             pdf.cell(25, 8, f"${i['price']:,.2f}", 1, 0, 'R')
             pdf.cell(30, 8, ds, 1, 0, 'R')
             pdf.cell(30, 8, f"${i['total']:,.2f}", 1, 1, 'R')
-            
             d_txt = sanitize_text(i['desc'])
             if d_txt:
                 pdf.set_font('Arial', 'I', 8)
@@ -223,23 +250,21 @@ def create_pdf(quote_row):
     pdf.set_x(130); pdf.cell(30, 6, "GST (10%):", 0, 0, 'R'); pdf.cell(30, 6, f"${gst:,.2f}", 0, 1, 'R')
     pdf.set_font('Arial', 'B', 10)
     pdf.set_x(130); pdf.cell(30, 8, "Total:", 0, 0, 'R'); pdf.cell(30, 8, f"${grand:,.2f}", 0, 1, 'R')
-    
     return pdf.output(dest='S').encode('latin-1')
 
 # --- MAIN ---
 def main_app():
     st.sidebar.title(f"User: {st.session_state['user']}")
     if st.sidebar.button("Logout"): st.session_state['logged_in'] = False; st.rerun()
-    menu = st.sidebar.radio("Navigate", ["Product Search", "Quote Generator", "Data Admin"])
+    menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Quote Generator", "Data Admin"])
     
-    if menu == "Product Search":
+    if menu == "Product Search & Browse":
         st.header("🔎 Search")
         if st.button("Refresh DB"): dm.get_all_products_df.clear(); st.rerun()
         try: df = dm.get_all_products_df()
         except: df = pd.DataFrame()
         
         t1, t2 = st.tabs(["Search", "Browse"])
-        
         with t1:
             if not df.empty:
                 df_lbl, name_col = generate_search_labels(df)
@@ -252,25 +277,19 @@ def main_app():
                         res = df_lbl[df_lbl['Search_Label'] == sel]
                         for i, r in res.iterrows():
                             with st.expander(f"📦 {r[name_col]}", expanded=True):
-                                # RESTORED: Hide price columns unless toggled
                                 price_cols = [c for c in res.columns if any(x in c.lower() for x in ['price', 'cost', 'srp', 'msrp'])]
                                 pub_cols = [c for c in res.columns if c not in price_cols and c != 'Search_Label']
-                                
-                                for c in pub_cols:
-                                    st.write(f"**{c}:** {r[c]}")
-                                
+                                for c in pub_cols: st.write(f"**{c}:** {r[c]}")
                                 if price_cols:
                                     st.markdown("---")
                                     if st.toggle("Show Prices", key=f"t_{i}"):
                                         for pc in price_cols: st.metric(pc, f"{r[pc]}")
-
         with t2:
             cats = dm.get_categories()
             if cats:
                 cs = st.selectbox("Category", cats)
                 if not df.empty and 'category' in df.columns:
                     cd = df[df['category'] == cs]
-                    # RESTORED: Toggle for Table
                     if st.toggle("Show Prices in Table", key="t_browse"):
                         st.dataframe(cd, use_container_width=True)
                     else:
@@ -300,8 +319,14 @@ def main_app():
             c4, c5 = st.columns(2)
             c4.date_input("Date", date.today(), key="q_date_input")
             c5.date_input("Expire", date.today(), key="q_expire_input")
-            st.divider()
+            
+            # NEW: SELLER SETTINGS
+            with st.expander("🏢 Seller Details (Optional)"):
+                st.text_input("Contact Name", value="Vincent Xu", key="s_name")
+                st.text_input("Contact Email", value="vincentxu@msi.com", key="s_email")
+                st.text_input("Contact Phone", value="", placeholder="Optional", key="s_phone")
 
+            st.divider()
             st.subheader("2. Add Item")
             st.selectbox("Search (Auto-fill)", search_opts, index=None, key="q_search_product", on_change=on_search_change)
             c1, c2 = st.columns([1, 2])
@@ -319,11 +344,9 @@ def main_app():
             if st.session_state['quote_items']:
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
+                if 'table_key' not in st.session_state: st.session_state['table_key'] = 0
                 curr_names = q_df['name'].unique().tolist()
                 comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
-                
-                # Dynamic Table Key
-                if 'table_key' not in st.session_state: st.session_state['table_key'] = 0
                 
                 edited = st.data_editor(
                     q_df, num_rows="dynamic", use_container_width=True, key=f"tbl_{st.session_state['table_key']}",
@@ -333,7 +356,6 @@ def main_app():
                     }
                 )
                 
-                # Auto-fill Intercept
                 new_items = []; trigger = False
                 for idx, row in edited.iterrows():
                     nm = str(row['name'])
@@ -343,7 +365,6 @@ def main_app():
                             row['name'] = d['name']; row['desc'] = d['desc']
                             row['price'] = d['price']; row['qty'] = 1.0
                             trigger = True
-                    
                     q = safe_float(row.get('qty', 1)); p = safe_float(row.get('price', 0))
                     d = safe_float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
                     g = q*p; di = g*(d/100) if t=='%' else d
@@ -360,8 +381,9 @@ def main_app():
                 c1.metric("Subtotal", f"${sub:,.2f}")
                 c2.metric("GST", f"${gst:,.2f}")
                 c3.metric("Grand Total", f"${grand:,.2f}")
-                
-                st.button("💾 Save Quote", type="primary", on_click=save_quote_cb)
+                c_a1, c_a2 = st.columns([1, 4])
+                c_a1.button("💾 Save Quote", type="primary", on_click=save_quote_cb)
+                if c_a2.button("Clear"): st.session_state['quote_items'] = []; st.rerun()
             else: st.info("Empty")
 
         with t2:
@@ -371,31 +393,27 @@ def main_app():
             if not hist.empty:
                 hist.columns = [c.strip() for c in hist.columns]
                 if 'created_at' in hist.columns: hist = hist.sort_values('created_at', ascending=False)
-                
                 for i, r in hist.iterrows():
                     try:
                         amt = safe_float(r.get('total_amount', 0))
+                        # Fix mismatch if total is 0
                         if amt == 0 and 'items_json' in r:
                             its = normalize_items(json.loads(r['items_json']))
                             amt = sum(x['total'] for x in its) * 1.10
                     except: amt = 0.0
-                    
                     with st.expander(f"{r.get('created_at','?')} | {r.get('client_name','?')} | ${amt:,.2f}"):
                         try:
                             pdf_data = create_pdf(r)
-                            st.download_button("📩 Download PDF", pdf_data, f"Quote.pdf", "application/pdf")
+                            st.download_button("📩 PDF", pdf_data, f"Quote.pdf", "application/pdf")
                         except Exception as e: st.error(f"PDF Error: {e}")
-                        
-                        # EDIT RESTORED
                         if st.button("✏️ Edit", key=f"e_{i}"):
                             try:
                                 st.session_state['quote_items'] = normalize_items(json.loads(r['items_json']))
                                 st.session_state['q_client_input'] = r.get('client_name', '')
                                 st.session_state['q_email_input'] = r.get('client_email', '')
                                 st.session_state['q_phone_input'] = r.get('client_phone', '')
-                                st.toast("Loaded into Generator!"); time.sleep(1)
+                                st.toast("Loaded!"); time.sleep(1)
                             except: st.error("Data Error")
-                        
                         if st.button("Delete", key=f"d_{i}"):
                             dm.delete_quote(r.get('quote_id'), st.session_state['user'])
                             st.rerun()
@@ -403,21 +421,19 @@ def main_app():
 
     elif menu == "Data Admin":
         st.header("📂 Data Admin")
-        up = st.file_uploader("Upload Pricebook", accept_multiple_files=False)
+        up = st.file_uploader("Upload", accept_multiple_files=False)
         cats = dm.get_categories()
         c_sel = st.selectbox("Category", cats if cats else ["Default"])
-        if up and st.button("Process File"):
+        if up and st.button("Process"):
             try:
                 df = pd.read_csv(up) if up.name.endswith('csv') else pd.read_excel(up)
                 dm.save_products_dynamic(df.dropna(how='all'), c_sel, st.session_state['user'])
                 st.success("Done!")
             except Exception as e: st.error(str(e))
 
-# AUTH & RUN
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
-
 if 'input_name' not in st.session_state: st.session_state['input_name'] = ""
 if 'input_desc' not in st.session_state: st.session_state['input_desc'] = ""
 if 'input_price' not in st.session_state: st.session_state['input_price'] = 0.0
@@ -438,10 +454,7 @@ def login_page():
     p = st.text_input("Pass", type="password")
     if st.button("Sign In"):
         s, m = check_login(u, p)
-        if s: 
-            st.session_state['logged_in'] = True
-            st.session_state['user'] = u
-            st.rerun()
+        if s: st.session_state['logged_in'] = True; st.session_state['user'] = u; st.rerun()
         else: st.error(m)
 
 if st.session_state['logged_in']: main_app()
