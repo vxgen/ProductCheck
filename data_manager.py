@@ -56,15 +56,14 @@ def get_all_products_df():
 
 @st.cache_data(ttl=5)
 def get_quotes():
-    """Robust fetch of quote history."""
+    """Fetches quotes from the NEW v2 sheet."""
     try:
-        ws = get_sheet().worksheet("quotes")
+        ws = get_sheet().worksheet("quotes_v2") # NEW SHEET NAME
         data = ws.get_all_values()
         if len(data) < 2: return pd.DataFrame()
+        
         headers = data[0]
         rows = data[1:]
-        # Ensure we have data
-        if not rows: return pd.DataFrame(columns=headers)
         return pd.DataFrame(rows, columns=headers)
     except:
         return pd.DataFrame()
@@ -111,9 +110,13 @@ def update_products_dynamic(new_df, category, user, key_col):
     save_products_dynamic(new_df, category, user)
     return {"new": len(new_df), "eol": 0, "total": len(new_df)}
 
-# --- QUOTE SAVE (AUTO-FIX HEADERS) ---
+# --- QUOTE SAVE (v2) ---
 def save_quote(quote_data, user):
     sh = get_sheet()
+    
+    # WE USE A NEW SHEET NAME TO FORCE A FRESH START
+    sheet_name = "quotes_v2"
+    
     expected_headers = [
         "quote_id", "created_at", "created_by", 
         "client_name", "client_email", "client_phone", 
@@ -121,21 +124,17 @@ def save_quote(quote_data, user):
     ]
     
     try:
-        ws = sh.worksheet("quotes")
-        # AUTO-FIX: Check headers and update if wrong
-        current = ws.row_values(1)
-        if current != expected_headers:
-            ws.update(values=[expected_headers], range_name='A1')
+        ws = sh.worksheet(sheet_name)
+        # Ensure headers are correct
+        if ws.row_values(1) != expected_headers:
+             ws.update(values=[expected_headers], range_name='A1')
     except:
-        ws = sh.add_worksheet(title="quotes", rows=1000, cols=15)
+        ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=15)
         ws.append_row(expected_headers)
     
     quote_id = f"Q-{int(time.time())}"
-    
-    # Pack Seller Info
     seller_info = json.dumps(quote_data.get("seller_info", {}))
 
-    # Data must match expected_headers order exactly
     row = [
         quote_id,
         str(datetime.now()),
@@ -157,7 +156,7 @@ def save_quote(quote_data, user):
 
 def delete_quote(qid, user):
     try:
-        ws = get_sheet().worksheet("quotes")
+        ws = get_sheet().worksheet("quotes_v2")
         cell = ws.find(str(qid))
         ws.delete_rows(cell.row)
         get_quotes.clear()
